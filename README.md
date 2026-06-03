@@ -1,25 +1,25 @@
-# Cong Chung So
+# Công Chứng Số
 
-Nen tang quan ly bieu mau va tu dong hoa tai lieu cho van phong cong chung.
+Nền tảng quản lý biểu mẫu và tự động hóa tài liệu cho văn phòng công chứng.
 
-Du an gom 3 thanh phan:
+Dự án hiện gồm 3 thành phần chính:
 
-- `frontend`: giao dien React + Vite
-- `backend`: API Node.js + Express + MySQL
-- `doc-converter-service`: microservice .NET 8 tren Windows de chuyen `.doc -> .docx` bang Microsoft Word COM
+- `frontend`: giao diện người dùng, xây dựng bằng React + Vite
+- `backend`: API chính, xây dựng bằng Node.js + Express + MySQL
+- `doc-converter-service`: microservice .NET 8 chạy trên Windows để chuyển file `.doc` sang `.docx` bằng Microsoft Word COM
 
-## Tinh nang chinh
+## Tính năng chính
 
-- Quan ly thu vien bieu mau theo danh muc dang cay
-- Upload nhieu bieu mau Word cung luc
-- Ho tro ca `.docx` va `.doc`
-- Tu dong quet placeholder `{{ten_bien}}`
-- Cau hinh field dong cho tung bieu mau
-- Lien ket bieu mau cha/con
-- Dien form va xuat bo ho so `.docx`
-- Batch convert cac file `.doc` cu sang `.docx`
+- Quản lý thư viện biểu mẫu theo danh mục dạng cây
+- Tải lên nhiều biểu mẫu Word cùng lúc
+- Hỗ trợ cả `.docx` và `.doc`
+- Tự động quét placeholder dạng `{{ten_bien}}`
+- Cấu hình field động cho từng biểu mẫu
+- Liên kết biểu mẫu cha/con
+- Điền form và xuất bộ hồ sơ `.docx`
+- Batch convert các file `.doc` cũ sang `.docx`
 
-## Kien truc
+## Kiến trúc
 
 ```text
 Frontend (React/Vite)
@@ -27,44 +27,43 @@ Frontend (React/Vite)
         v
 Backend API (Node.js/Express)
         |
-        +--> parse .docx, scan placeholders, luu DB
+        +--> parse .docx, quét placeholder, lưu DB
         |
-        +--> goi Doc Converter Service khi upload file .doc
+        +--> gọi Doc Converter Service khi upload file .doc
                      |
                      v
-          Microsoft Word COM tren Windows
+          Microsoft Word COM trên Windows
 ```
 
-## Cau truc thu muc
+## Cấu trúc thư mục
 
 ```text
 congchung/
-|- frontend/
-|- backend/
-|- doc-converter-service/
-|- database/
-|- service-flow.html
-`- template-linking.md
+├─ frontend/
+├─ backend/
+├─ doc-converter-service/
+├─ database/
+└─ template-linking.md
 ```
 
-## Yeu cau moi truong
+## Yêu cầu môi trường
 
-### Bat buoc
+### Bắt buộc
 
 - Windows
-- Node.js 18+ hoac moi hon
+- Node.js 18 trở lên
 - MySQL
 - .NET 8 SDK
-- Microsoft Word / Microsoft Office da cai tren may neu muon xu ly file `.doc`
+- Microsoft Word hoặc Microsoft Office nếu muốn xử lý file `.doc`
 
-### Luu y quan trong
+### Lưu ý quan trọng
 
-- File `.docx` co the xu ly duoc khi `doc-converter-service` khong chay.
-- File `.doc` chi xu ly duoc khi:
-  - `doc-converter-service` dang chay
-  - may co Microsoft Word
+- File `.docx` vẫn có thể xử lý được khi `doc-converter-service` không chạy.
+- File `.doc` chỉ xử lý được khi:
+  - `doc-converter-service` đang chạy
+  - máy có cài Microsoft Word
 
-## Cai dat
+## Cài đặt
 
 ### 1. Backend
 
@@ -73,7 +72,7 @@ cd backend
 npm install
 ```
 
-Tao file `.env` trong `backend/` neu chua co:
+Tạo file `.env` trong `backend/` nếu chưa có:
 
 ```env
 PORT=5000
@@ -101,7 +100,7 @@ cd doc-converter-service
 dotnet restore
 ```
 
-## Khoi tao database
+## Khởi tạo database
 
 Import schema:
 
@@ -109,11 +108,11 @@ Import schema:
 mysql -u root -p congchung < database/schema.sql
 ```
 
-Backend cung co mot so migration runtime de bo sung cot neu can.
+Backend cũng có một số migration runtime để bổ sung cột nếu cần.
 
-## Cach chay du an
+## Cách chạy dự án
 
-Du an hien tai can chay rieng 3 tien trinh.
+Hiện tại dự án cần chạy riêng 3 tiến trình.
 
 ### Terminal 1: Doc Converter Service
 
@@ -122,13 +121,13 @@ cd doc-converter-service
 dotnet run
 ```
 
-Mac dinh service chay tai:
+Mặc định service chạy tại:
 
 ```text
 http://127.0.0.1:5051
 ```
 
-Kiem tra nhanh:
+Kiểm tra nhanh:
 
 ```bash
 curl http://127.0.0.1:5051/health
@@ -141,7 +140,7 @@ cd backend
 npm run dev
 ```
 
-Mac dinh backend chay tai:
+Mặc định backend chạy tại:
 
 ```text
 http://localhost:5000
@@ -154,46 +153,46 @@ cd frontend
 npm run dev
 ```
 
-Mac dinh frontend chay tai:
+Mặc định frontend chạy tại:
 
 ```text
 http://localhost:5173
 ```
 
-## Luong upload bieu mau
+## Luồng upload biểu mẫu
 
-### Truong hop `.docx`
+### Trường hợp `.docx`
 
-1. Frontend gui file len backend
-2. Backend luu file tam
-3. Backend quet placeholder
-4. Backend luu metadata vao MySQL
-5. Frontend mo man hinh chi tiet cau hinh
+1. Frontend gửi file lên backend
+2. Backend lưu file tạm
+3. Backend quét placeholder
+4. Backend lưu metadata vào MySQL
+5. Frontend mở màn hình chi tiết để cấu hình
 
-### Truong hop `.doc`
+### Trường hợp `.doc`
 
-1. Frontend gui file len backend
-2. Backend gui file sang `doc-converter-service`
-3. Service .NET mo Word ngam va `Save As` sang `.docx`
-4. Service tra file `.docx` ve backend
-5. Backend tiep tuc quet placeholder va luu DB
+1. Frontend gửi file lên backend
+2. Backend gửi file sang `doc-converter-service`
+3. Service .NET mở Word ngầm và `Save As` sang `.docx`
+4. Service trả file `.docx` về backend
+5. Backend tiếp tục quét placeholder và lưu DB
 
 ## Multi-upload
 
-He thong hien ho tro:
+Hệ thống hiện hỗ trợ:
 
-- toi da `10 file / lan`
-- moi file toi da `1MB`
-- xu ly doc lap tung file
-- file loi khong lam hong ca batch
+- tối đa `10 file / lần`
+- mỗi file tối đa `1MB`
+- xử lý độc lập từng file
+- file lỗi không làm hỏng cả batch
 
-Ket qua tra ve theo tung file:
+Kết quả trả về theo từng file:
 
 - `success`
 - `failed`
-- thong bao loi cu the
+- thông báo lỗi cụ thể
 
-## Script huu ich
+## Script hữu ích
 
 ### Backend
 
@@ -219,47 +218,46 @@ dotnet run
 
 ## Troubleshooting
 
-### 1. File `.doc` bao loi khong ket noi microservice
+### 1. File `.doc` báo lỗi không kết nối microservice
 
-Nguyen nhan:
+Nguyên nhân:
 
-- `doc-converter-service` chua chay
+- `doc-converter-service` chưa chạy
 - sai `DOC_CONVERTER_URL`
 
-Kiem tra:
+Kiểm tra:
 
 ```bash
 curl http://127.0.0.1:5051/health
 ```
 
-### 2. File `.doc` khong convert duoc du da chay service
+### 2. File `.doc` không convert được dù đã chạy service
 
-Kiem tra:
+Kiểm tra:
 
-- Microsoft Word da cai tren may chua
-- Word co mo duoc file `.doc` thu cong khong
-- service co quyen tao file trong thu muc `temp/` khong
+- Microsoft Word đã cài trên máy chưa
+- Word có mở được file `.doc` thủ công không
+- service có quyền tạo file trong thư mục `temp/` không
 
-### 3. Upload thanh cong nhung `0 bien`
+### 3. Upload thành công nhưng `0 biến`
 
-Nguyen nhan thuong gap:
+Nguyên nhân thường gặp:
 
-- file khong chua placeholder theo dung mau `{{ten_bien}}`
-- placeholder bi tach vo cau truc ma parser hien tai khong nhan dien duoc
+- file không chứa placeholder theo đúng mẫu `{{ten_bien}}`
+- placeholder bị tách vỡ cấu trúc mà parser hiện tại không nhận diện được
 
-### 4. Ten file tieng Viet bi loi
+### 4. Tên file tiếng Việt bị lỗi
 
-Backend da co buoc chuan hoa ten file upload. Neu van gap, can kiem tra ten file goc tren may nguoi dung va cach browser gui multipart.
+Backend đã có bước chuẩn hóa tên file upload. Nếu vẫn gặp, cần kiểm tra tên file gốc trên máy người dùng và cách browser gửi multipart.
 
-## Tai lieu lien quan
+## Tài liệu liên quan
 
-- [service-flow.html](D:/MyProject/congchung/service-flow.html)
-- [template-linking.md](D:/MyProject/congchung/template-linking.md)
-- [doc-converter-service/README.md](D:/MyProject/congchung/doc-converter-service/README.md)
+- `template-linking.md`
+- `doc-converter-service/README.md`
 
-## Huong phat trien tiep
+## Hướng phát triển tiếp
 
-- dong goi script chay cung luc frontend/backend/converter
-- them progress tracking cho batch upload
-- bo sung health check tong hop cho ca 3 thanh phan
-- them deploy guide cho may van phong
+- đóng gói script chạy cùng lúc frontend/backend/converter
+- thêm progress tracking cho batch upload
+- bổ sung health check tổng hợp cho cả 3 thành phần
+- thêm deploy guide cho máy văn phòng

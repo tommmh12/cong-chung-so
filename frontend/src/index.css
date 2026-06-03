@@ -1,0 +1,393 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Outfit', sans-serif;
+
+  --color-primary-50: #f8fafc;
+  --color-primary-100: #f1f5f9;
+  --color-primary-200: #e2e8f0;
+  --color-primary-300: #cbd5e1;
+  --color-primary-400: #94a3b8;
+  --color-primary-500: #64748b;
+  --color-primary-600: #475569;
+  --color-primary-700: #334155;
+  --color-primary-800: #1e293b;
+  --color-primary-900: #0f172a;
+
+  /* Premium Emerald accent system replacing Gold */
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-400: #34d399;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #047857;
+  --color-emerald-800: #065f46;
+  --color-emerald-900: #064e3b;
+
+  /* Aliasing Gold to Emerald for compatibility and gradual migration */
+  --color-gold-50: #ecfdf5;
+  --color-gold-100: #d1fae5;
+  --color-gold-200: #a7f3d0;
+  --color-gold-300: #6ee7b7;
+  --color-gold-400: #34d399;
+  --color-gold-500: #10b981;
+  --color-gold-600: #059669;
+  --color-gold-700: #047857;
+  --color-gold-800: #065f46;
+  --color-gold-900: #064e3b;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-800 antialiased min-h-screen selection:bg-emerald-600 selection:text-white font-sans;
+    background:
+      radial-gradient(circle at top left, rgba(16, 185, 129, 0.08), transparent 28rem),
+      radial-gradient(circle at top right, rgba(15, 23, 42, 0.05), transparent 26rem),
+      linear-gradient(180deg, #f8fafc 0%, #ffffff 46%, #f8fafc 100%);
+  }
+
+  input, select, textarea, button {
+    font: inherit;
+  }
+}
+
+/* Clean SaaS surface system */
+.glass-panel {
+  @apply bg-white/95 border border-slate-200/80 shadow-sm rounded-2xl transition-all duration-200;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 30px rgba(15, 23, 42, 0.03) !important;
+}
+
+.glass-panel-hover {
+  @apply transition-all duration-200 hover:bg-white hover:border-slate-300/90 hover:shadow-lg hover:translate-y-[-2px];
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-200/80 rounded-full hover:bg-slate-300;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Pulse glow animation for CTA buttons */
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.9;
+    transform: scale(1);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.015);
+    box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2.5s infinite ease-in-out;
+}
+
+/* Custom docx-preview styling mimicking real textured paper */
+.docx-container {
+  font-family: 'Calibri', 'Arial', 'Times New Roman', sans-serif !important;
+  width: 100%;
+}
+
+.docx-container .docx-rendered {
+  background: white !important;
+  color: #1f2937 !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 24px 48px -24px rgba(15, 23, 42, 0.18) !important;
+  border: 1px solid rgba(15, 23, 42, 0.06) !important;
+  margin: 0 auto 1.5rem auto !important;
+  padding: 0.9in 0.7in !important;
+  box-sizing: border-box !important;
+  max-width: 800px !important;
+  width: 100% !important;
+  min-height: 800px;
+  text-align: left;
+  border-radius: 14px;
+}
+
+/* Override docx-preview internal classes to match our style */
+.docx-container section.docx {
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.docx-container p {
+  margin-bottom: 6px !important;
+  line-height: 1.4 !important;
+}
+
+/* Custom premium utility classes */
+.btn-premium {
+  @apply transition-all duration-150 active:scale-[0.98] active:translate-y-0.5 select-none rounded-xl;
+}
+
+.clean-input {
+  @apply bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 outline-none transition-all shadow-sm focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10;
+}
+
+.clean-label {
+  @apply block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 font-display;
+}
+
+.clean-section-title {
+  @apply text-xs font-bold text-slate-700 uppercase tracking-wider font-display;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-up {
+  animation: fade-up 240ms ease-out both;
+}
+
+.drag-active {
+  border-color: rgba(16, 185, 129, 0.8) !important;
+  background-color: rgba(209, 250, 229, 0.3) !important;
+  transform: scale(1.005) !important;
+  box-shadow: 0 4px 15px -3px rgba(16, 185, 129, 0.1) !important;
+}
+
+/* Table row hover highlight in docx preview */
+.docx-container table tr {
+  cursor: pointer;
+}
+
+.docx-container table tr:hover td {
+  background-color: rgba(16, 185, 129, 0.06) !important;
+  transition: background-color 0.15s ease;
+}
+
+.docx-container table tr:first-child:hover td {
+  background-color: rgba(16, 185, 129, 0.1) !important;
+}
+
+.docx-container table {
+  border-collapse: collapse;
+}
+
+/* Ensure images inside docx rendering don't overflow */
+.docx-container img, .docx-rendered img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 1rem auto;
+}
+
+/* ── PDF PREVIEW MODAL & PRINT STYLING ── */
+
+.docx-container-modal {
+  font-family: 'Calibri', 'Arial', 'Times New Roman', sans-serif !important;
+  width: 100%;
+}
+
+.docx-container-modal .docx-rendered-modal {
+  background: white !important;
+  color: #1f2937 !important;
+  padding: 0.8in 0.6in !important;
+  box-sizing: border-box !important;
+  max-width: 800px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  text-align: left;
+}
+
+.docx-container-modal section.docx {
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.docx-container-modal p {
+  margin-bottom: 6px !important;
+  line-height: 1.45 !important;
+}
+
+.docx-container-modal table {
+  border-collapse: collapse;
+}
+
+@media print {
+  /* Hide everything except the modal container */
+  #root > div:not(.print-container-modal) {
+    display: none !important;
+  }
+  
+  body {
+    background: white !important;
+    color: black !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .print-container-modal {
+    position: static !important;
+    display: block !important;
+    background: white !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  .print-container-modal .pdf-page-wrapper {
+    margin-bottom: 0 !important;
+    page-break-after: always !important;
+    page-break-inside: avoid !important;
+    display: block !important;
+  }
+
+  .print-container-modal .pdf-page-wrapper:last-child {
+    page-break-after: avoid !important;
+  }
+
+  .doc-print-page {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    min-height: 0 !important;
+  }
+
+  .docx-container-modal .docx-rendered-modal {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+}
+
+/* ── DASHBOARD LAYOUT & REDESIGN ── */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+}
+
+.sidebar {
+  width: 260px;
+  background-color: #0f172a; /* Slate 900 */
+  color: #94a3b8; /* Slate 400 */
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #1e293b; /* Slate 800 */
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+.sidebar-collapsed {
+  width: 72px;
+}
+
+.sidebar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  margin: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s ease-in-out;
+  cursor: pointer;
+}
+
+.sidebar-menu-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: #f1f5f9; /* Slate 100 */
+}
+
+.sidebar-menu-item.active {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  color: #10b981 !important;
+  border: 1px solid rgba(16, 185, 129, 0.15);
+}
+
+.main-container {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  min-width: 0; /* Prevent overflow */
+  background-color: #f8fafc; /* Slate 50 */
+}
+
+.navbar {
+  height: 64px;
+  background-color: white;
+  border-bottom: 1px solid #e2e8f0; /* Slate 200 */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.role-switcher {
+  display: flex;
+  background-color: #f1f5f9; /* Slate 100 */
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.role-switcher-btn {
+  padding: 6px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.role-switcher-btn.active {
+  background-color: white;
+  color: #0f172a; /* Slate 900 */
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.role-switcher-btn:not(.active) {
+  color: #64748b; /* Slate 500 */
+}
+
+.role-switcher-btn:not(.active):hover {
+  color: #334155; /* Slate 700 */
+}
+
+.content-area {
+  flex-grow: 1;
+  padding: 24px;
+  overflow-y: auto;
+}
+

@@ -1,0 +1,99 @@
+# =========================
+# Dependencies / Build
+# =========================
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+bin/
+obj/
+**/bin/
+**/obj/
+
+# =========================
+# Runtime / Generated files
+# =========================
+backend/uploads/templates/*
+!backend/uploads/templates/.gitkeep
+backend/uploads/outputs/*
+!backend/uploads/outputs/.gitkeep
+doc-converter-service/temp/
+**/temp/
+coverage/
+**/coverage/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env
+**/.env.*
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+*.snk
+secrets.json
+appsettings.Local.json
+appsettings.*.local.json
+
+# =========================
+# Editor / Local tool config
+# =========================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sw?
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Local AI / agent tool state
+.codex/
+**/.codex/
+.agents/
+.antigravitycli/
+
+# =========================
+# Office / local documents
+# =========================
+*.doc
+*.docx
+*.docm
+*.dot
+*.dotx
+*.dotm
+*.pdf
+*.xls
+*.xlsx
+*.xlsm
+*.ppt
+*.pptx
+test_template.docx
+test_merged_result.docx
+HĐ Chuyển Nhượng Quyền Sử Dụng Đất/
+
+# =========================
+# Local notes / generated docs
+# =========================
+service-flow.html
+template-linking.md

@@ -1,0 +1,25 @@
+{
+  "name": "document-automation-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Document Automation Platform (Công Chứng Số)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "convert:doc": "node src/scripts/bulk-convert-doc-templates.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "cors": "^2.8.5",
+    "docxtemplater": "^3.47.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.9.7",
+    "pizzip": "^3.0.7",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

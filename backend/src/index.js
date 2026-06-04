@@ -1673,55 +1673,136 @@ app.post('/api/templates/:id/import', async (req, res) => {
 async function migrateDatabase() {
   try {
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS notary_offices (
+        id CHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(191) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        phone VARCHAR(20),
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS template_categories (
         id CHAR(36) PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
-        parent_id CHAR(36) DEFAULT NULL,
-        sort_order INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (parent_id) REFERENCES template_categories(id) ON DELETE SET NULL
-      ) ENGINE=InnoDB
+        parent_id CHAR(36),
+        sort_order INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_template_categories_parent
+          FOREIGN KEY (parent_id) REFERENCES template_categories(id) ON DELETE SET NULL
+      )
     `);
 
-    // 1. Kiểm tra và di cư bảng templates
-    const [templatesColumns] = await pool.query('SHOW COLUMNS FROM templates');
-    const templatesColumnNames = templatesColumns.map(c => c.Field);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS templates (
+        id CHAR(36) PRIMARY KEY,
+        office_id CHAR(36) NOT NULL,
+        category_id CHAR(36),
+        name VARCHAR(255) NOT NULL,
+        file_path VARCHAR(500) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'draft',
+        parent_template_id CHAR(36),
+        is_repeated BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_templates_office
+          FOREIGN KEY (office_id) REFERENCES notary_offices(id) ON DELETE CASCADE,
+        CONSTRAINT fk_templates_category
+          FOREIGN KEY (category_id) REFERENCES template_categories(id) ON DELETE SET NULL,
+        CONSTRAINT fk_templates_parent
+          FOREIGN KEY (parent_template_id) REFERENCES templates(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS template_fields (
+        id CHAR(36) PRIMARY KEY,
+        template_id CHAR(36) NOT NULL,
+        key_name VARCHAR(100) NOT NULL,
+        field_type VARCHAR(20) NOT NULL DEFAULT 'text',
+        label VARCHAR(255) NOT NULL,
+        is_required BOOLEAN NOT NULL DEFAULT TRUE,
+        order_index INTEGER DEFAULT 0,
+        replace_text VARCHAR(500),
+        paragraph_context TEXT,
+        parent_field_key VARCHAR(100),
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_template_fields_template
+          FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE,
+        CONSTRAINT uk_template_fields_template_key UNIQUE (template_id, key_name)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_submissions (
+        id CHAR(36) PRIMARY KEY,
+        template_id CHAR(36) NOT NULL,
+        customer_name VARCHAR(255),
+        customer_phone VARCHAR(20),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        values_json JSONB NOT NULL,
+        output_file_path VARCHAR(500),
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMPTZ,
+        CONSTRAINT fk_document_submissions_template
+          FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE
+      )
+    `);
+
+    const [templatesColumns] = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'templates'
+    `);
+    const templatesColumnNames = templatesColumns.map(c => c.column_name);
+
     if (!templatesColumnNames.includes('parent_template_id')) {
-      await pool.query('ALTER TABLE templates ADD COLUMN parent_template_id CHAR(36) DEFAULT NULL');
-      await pool.query('ALTER TABLE templates ADD FOREIGN KEY (parent_template_id) REFERENCES templates(id) ON DELETE SET NULL');
-      console.log('✅ Đã thêm cột parent_template_id vào bảng templates.');
+      await pool.query('ALTER TABLE templates ADD COLUMN parent_template_id CHAR(36)');
+      await pool.query(`
+        ALTER TABLE templates
+        ADD CONSTRAINT fk_templates_parent
+        FOREIGN KEY (parent_template_id) REFERENCES templates(id) ON DELETE SET NULL
+      `);
     }
-    
+
     if (!templatesColumnNames.includes('is_repeated')) {
-      await pool.query('ALTER TABLE templates ADD COLUMN is_repeated TINYINT(1) DEFAULT 0');
-      console.log('✅ Đã thêm cột is_repeated vào bảng templates.');
+      await pool.query('ALTER TABLE templates ADD COLUMN is_repeated BOOLEAN NOT NULL DEFAULT FALSE');
     }
 
     if (!templatesColumnNames.includes('category_id')) {
-      await pool.query('ALTER TABLE templates ADD COLUMN category_id CHAR(36) DEFAULT NULL');
-      await pool.query('ALTER TABLE templates ADD FOREIGN KEY (category_id) REFERENCES template_categories(id) ON DELETE SET NULL');
-      console.log('✅ Đã thêm cột category_id vào bảng templates.');
+      await pool.query('ALTER TABLE templates ADD COLUMN category_id CHAR(36)');
+      await pool.query(`
+        ALTER TABLE templates
+        ADD CONSTRAINT fk_templates_category
+        FOREIGN KEY (category_id) REFERENCES template_categories(id) ON DELETE SET NULL
+      `);
     }
 
-    // 2. Kiểm tra và di cư bảng template_fields
-    const [columns] = await pool.query('SHOW COLUMNS FROM template_fields');
-    const columnNames = columns.map(c => c.Field);
-    
-    if (!columnNames.includes('replace_text')) {
-      await pool.query('ALTER TABLE template_fields ADD COLUMN replace_text VARCHAR(500) DEFAULT NULL');
-      console.log('✅ Đã thêm cột replace_text vào bảng template_fields.');
-    }
-    
-    if (!columnNames.includes('paragraph_context')) {
-      await pool.query('ALTER TABLE template_fields ADD COLUMN paragraph_context TEXT DEFAULT NULL');
-      console.log('✅ Đã thêm cột paragraph_context vào bảng template_fields.');
+    const [fieldColumns] = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'template_fields'
+    `);
+    const fieldColumnNames = fieldColumns.map(c => c.column_name);
+
+    if (!fieldColumnNames.includes('replace_text')) {
+      await pool.query('ALTER TABLE template_fields ADD COLUMN replace_text VARCHAR(500)');
     }
 
-    if (!columnNames.includes('parent_field_key')) {
-      await pool.query('ALTER TABLE template_fields ADD COLUMN parent_field_key VARCHAR(100) DEFAULT NULL');
-      console.log('✅ Đã thêm cột parent_field_key vào bảng template_fields.');
+    if (!fieldColumnNames.includes('paragraph_context')) {
+      await pool.query('ALTER TABLE template_fields ADD COLUMN paragraph_context TEXT');
     }
+
+    if (!fieldColumnNames.includes('parent_field_key')) {
+      await pool.query('ALTER TABLE template_fields ADD COLUMN parent_field_key VARCHAR(100)');
+    }
+
+    console.log('✅ Database migration hoàn tất trên PostgreSQL.');
   } catch (error) {
     console.error('❌ Lỗi khi chạy migration database:', error.message);
   }

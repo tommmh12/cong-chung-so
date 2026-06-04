@@ -1,70 +1,126 @@
-CREATE DATABASE IF NOT EXISTS document_automation CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE document_automation;
+-- PostgreSQL không dùng CREATE DATABASE IF NOT EXISTS trong cùng script app
+-- Hãy tạo database trên Supabase/Neon trước, rồi chạy phần dưới
 
--- 1. Bảng văn phòng công chứng
+-- 1. Enum types
+DO $$ BEGIN
+    CREATE TYPE office_status AS ENUM ('active', 'inactive');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE template_status AS ENUM ('active', 'draft');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE field_type_enum AS ENUM ('text', 'date', 'number', 'boolean');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE submission_status AS ENUM ('pending', 'completed', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+
+-- 2. Bảng văn phòng công chứng
 CREATE TABLE IF NOT EXISTS notary_offices (
-    id CHAR(36) PRIMARY KEY,
+    id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     email VARCHAR(191) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     phone VARCHAR(20) DEFAULT NULL,
-    status ENUM('active', 'inactive') DEFAULT 'active',
+    status office_status DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
--- 2. Bảng quản lý template docx gốc
+
+-- 3. Bảng danh mục template
 CREATE TABLE IF NOT EXISTS template_categories (
-    id CHAR(36) PRIMARY KEY,
+    id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    parent_id CHAR(36) DEFAULT NULL,
+    parent_id UUID DEFAULT NULL,
     sort_order INT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (parent_id) REFERENCES template_categories(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
--- 3. Bảng quản lý template docx gốc
+    CONSTRAINT fk_template_categories_parent
+        FOREIGN KEY (parent_id)
+        REFERENCES template_categories(id)
+        ON DELETE SET NULL
+);
+
+
+-- 4. Bảng quản lý template docx gốc
 CREATE TABLE IF NOT EXISTS templates (
-    id CHAR(36) PRIMARY KEY,
-    office_id CHAR(36) NOT NULL,
-    category_id CHAR(36) DEFAULT NULL,
+    id UUID PRIMARY KEY,
+    office_id UUID NOT NULL,
+    category_id UUID DEFAULT NULL,
     name VARCHAR(255) NOT NULL,
     file_path VARCHAR(500) NOT NULL,
-    status ENUM('active', 'draft') DEFAULT 'draft',
-    parent_template_id CHAR(36) DEFAULT NULL,
+    status template_status DEFAULT 'draft',
+    parent_template_id UUID DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (office_id) REFERENCES notary_offices(id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES template_categories(id) ON DELETE SET NULL,
-    FOREIGN KEY (parent_template_id) REFERENCES templates(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
--- 4. Bảng quản lý các biến động quét được từ file Word
+    CONSTRAINT fk_templates_office
+        FOREIGN KEY (office_id)
+        REFERENCES notary_offices(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_templates_category
+        FOREIGN KEY (category_id)
+        REFERENCES template_categories(id)
+        ON DELETE SET NULL,
+
+    CONSTRAINT fk_templates_parent_template
+        FOREIGN KEY (parent_template_id)
+        REFERENCES templates(id)
+        ON DELETE SET NULL
+);
+
+
+-- 5. Bảng quản lý các biến động quét được từ file Word
 CREATE TABLE IF NOT EXISTS template_fields (
-    id CHAR(36) PRIMARY KEY,
-    template_id CHAR(36) NOT NULL,
+    id UUID PRIMARY KEY,
+    template_id UUID NOT NULL,
     key_name VARCHAR(100) NOT NULL,
-    field_type ENUM('text', 'date', 'number', 'boolean') DEFAULT 'text',
+    field_type field_type_enum DEFAULT 'text',
     label VARCHAR(255) NOT NULL,
-    is_required TINYINT(1) DEFAULT 1,
+    is_required BOOLEAN DEFAULT TRUE,
     order_index INT DEFAULT 0,
     parent_field_key VARCHAR(100) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE,
-    UNIQUE KEY uk_template_key (template_id, key_name)
-) ENGINE=InnoDB;
 
--- 5. Bảng lưu trữ hồ sơ nộp và dữ liệu JSON phẳng
+    CONSTRAINT fk_template_fields_template
+        FOREIGN KEY (template_id)
+REFERENCES templates(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT uk_template_key
+        UNIQUE (template_id, key_name)
+);
+
+
+-- 6. Bảng lưu trữ hồ sơ nộp và dữ liệu JSON phẳng
 CREATE TABLE IF NOT EXISTS document_submissions (
-    id CHAR(36) PRIMARY KEY,
-    template_id CHAR(36) NOT NULL,
+    id UUID PRIMARY KEY,
+    template_id UUID NOT NULL,
     customer_name VARCHAR(255) DEFAULT NULL,
     customer_phone VARCHAR(20) DEFAULT NULL,
-    status ENUM('pending', 'completed', 'failed') DEFAULT 'pending',
-    values_json JSON NOT NULL,
+    status submission_status DEFAULT 'pending',
+    values_json JSONB NOT NULL,
     output_file_path VARCHAR(500) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at DATETIME DEFAULT NULL,
-    FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE
-) ENGINE=InnoDB;
+    completed_at TIMESTAMP DEFAULT NULL,
+
+    CONSTRAINT fk_document_submissions_template
+        FOREIGN KEY (template_id)
+        REFERENCES templates(id)
+        ON DELETE CASCADE
+);

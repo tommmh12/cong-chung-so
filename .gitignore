@@ -1,6 +1,6 @@
-# =========================
-# Dependencies / Build
-# =========================
+# =========================================================================
+# 1. Dependencies / Build / Outputs (Node.js, .NET, C++)
+# =========================================================================
 node_modules/
 **/node_modules/
 dist/
@@ -11,18 +11,14 @@ bin/
 obj/
 **/bin/
 **/obj/
-
-# =========================
-# Runtime / Generated files
-# =========================
-backend/uploads/templates/*
-!backend/uploads/templates/.gitkeep
-backend/uploads/outputs/*
-!backend/uploads/outputs/.gitkeep
-doc-converter-service/temp/
-**/temp/
 coverage/
 **/coverage/
+
+# =========================================================================
+# 2. Runtime / Logs / Local Temp Files
+# =========================================================================
+doc-converter-service/temp/
+**/temp/
 logs/
 *.log
 npm-debug.log*
@@ -30,9 +26,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# =========================
-# Environment / Secrets
-# =========================
+# Cấu hình lưu trữ Uploads (Giữ lại cấu trúc thư mục qua file .gitkeep)
+!backend/uploads/templates/.gitkeep
+backend/uploads/outputs/*
+!backend/uploads/outputs/.gitkeep
+
+# =========================================================================
+# 3. Environment / Secrets / Security (Tuyệt đối không push lên Git)
+# =========================================================================
 .env
 .env.local
 .env.development.local
@@ -40,6 +41,11 @@ pnpm-debug.log*
 .env.production.local
 **/.env
 **/.env.*
+secrets.json
+appsettings.Local.json
+appsettings.*.local.json
+
+# SSL / Certificates / Keys
 *.pfx
 *.p12
 *.pem
@@ -47,36 +53,10 @@ pnpm-debug.log*
 *.crt
 *.cer
 *.snk
-secrets.json
-appsettings.Local.json
-appsettings.*.local.json
 
-# =========================
-# Editor / Local tool config
-# =========================
-.vscode/
-!.vscode/extensions.json
-.idea/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-*.sw?
-.DS_Store
-Thumbs.db
-ehthumbs.db
-desktop.ini
-
-# Local AI / agent tool state
-.codex/
-**/.codex/
-.agents/
-.antigravitycli/
-
-# =========================
-# Office / local documents
-# =========================
-.docs/
+# =========================================================================
+# 4. Office / Local Documents (Đã tối ưu và bổ sung *.docx tổng quát)
+# =========================================================================
 *.doc
 *.docx
 *.docm
@@ -89,12 +69,34 @@ desktop.ini
 *.xlsm
 *.ppt
 *.pptx
+
+# File test và thư mục tài liệu cụ thể
 test_template.docx
 test_merged_result.docx
 HĐ Chuyển Nhượng Quyền Sử Dụng Đất/
-
-# =========================
-# Local notes / generated docs
-# =========================
 service-flow.html
 template-linking.md
+
+# =========================================================================
+# 5. Editor / OS / AI Local Tools Config
+# =========================================================================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sw?
+
+# Hệ điều hành (Windows/macOS rác)
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Local AI / Agent Tool State
+.codex/
+**/.codex/
+.agents/
+.antigravitycli/

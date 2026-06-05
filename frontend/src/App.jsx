@@ -1,10 +1,90 @@
-﻿import { useState, useEffect, useRef, useCallback, Fragment } from 'react';
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react';
 import * as docx from 'docx-preview';
 
 const API_BASE = 'http://localhost:5000/api';
 const SUPPORTED_WORD_EXTENSIONS = ['doc', 'docx'];
 const MAX_UPLOAD_FILES = 10;
 const MAX_UPLOAD_FILE_SIZE = 1024 * 1024;
+
+import { renderAsync } from 'docx-preview';
+
+const DocxFilePreview = ({ subId, filename }) => {
+  const containerRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!subId || !filename) return;
+
+    const loadAndRender = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        if (containerRef.current) {
+          containerRef.current.innerHTML = "";
+        }
+        
+        const url = `http://localhost:5000/api/submissions/${subId}/download-file?filename=${encodeURIComponent(filename)}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error("Không thể tải file Word từ máy chủ.");
+        }
+        const arrayBuffer = await res.arrayBuffer();
+        
+        if (active && containerRef.current) {
+          await renderAsync(arrayBuffer, containerRef.current, null, {
+            className: "docx-rendered",
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            ignoreFonts: false,
+            breakPages: true,
+            experimental: true
+          });
+        }
+      } catch (err) {
+        console.error("Docx render error:", err);
+        if (active) {
+          setError(err.message || "Lỗi khi kết xuất file docx.");
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadAndRender();
+
+    return () => {
+      active = false;
+    };
+  }, [subId, filename]);
+
+  return (
+    <div className="space-y-3 font-sans">
+      {loading && (
+        <div className="py-12 text-center text-slate-400 text-xs flex flex-col items-center justify-center gap-2">
+          <div className="w-5 h-5 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
+          <span>Đang tạo bản xem trước tài liệu Word (.docx)...</span>
+        </div>
+      )}
+      
+      {error && (
+        <div className="py-6 text-center text-rose-500 text-xs italic border border-dashed border-rose-200 rounded-xl bg-rose-50/30">
+          ⚠️ {error}
+        </div>
+      )}
+
+      <div 
+        ref={containerRef} 
+        className="docx-container overflow-y-auto max-h-[600px] bg-slate-100/60 p-4 border border-slate-200/80 rounded-xl scrollbar-thin shadow-inner"
+        style={{ display: loading || error ? 'none' : 'block' }}
+      />
+    </div>
+  );
+};
 
 const getFileExtension = (fileName) => fileName.split('.').pop().toLowerCase();
 const isSupportedWordFile = (fileName) => SUPPORTED_WORD_EXTENSIONS.includes(getFileExtension(fileName));
@@ -370,6 +450,10 @@ export default function App() {
   const [expandedSubmissionId, setExpandedSubmissionId] = useState(null);
   const [submissionFilesMap, setSubmissionFilesMap] = useState({});
   const [loadingFilesForSubId, setLoadingFilesForSubId] = useState(null);
+  const [submissionDetailsMap, setSubmissionDetailsMap] = useState({});
+  const [loadingDetailsForSubId, setLoadingDetailsForSubId] = useState(null);
+  const [detailActiveTab, setDetailActiveTab] = useState('fields'); // fields | preview
+  const [activePreviewFilename, setActivePreviewFilename] = useState(null);
 
   const [activeView, setActiveView] = useState('dashboard'); // dashboard | config | fill | success
   const [currentStep, setCurrentStep] = useState(1);
@@ -833,9 +917,11 @@ export default function App() {
   const handleToggleExpandSubmission = async (subId) => {
     if (expandedSubmissionId === subId) {
       setExpandedSubmissionId(null);
+      setActivePreviewFilename(null);
       return;
     }
     setExpandedSubmissionId(subId);
+    setActivePreviewFilename(null);
     if (!submissionFilesMap[subId]) {
       setLoadingFilesForSubId(subId);
       try {
@@ -848,6 +934,20 @@ export default function App() {
         console.error("Lỗi khi tải danh sách file:", err);
       } finally {
         setLoadingFilesForSubId(null);
+      }
+    }
+    if (!submissionDetailsMap[subId]) {
+      setLoadingDetailsForSubId(subId);
+      try {
+        const res = await fetch(`${API_BASE}/submissions/${subId}/detail`);
+        if (res.ok) {
+          const detail = await res.json();
+          setSubmissionDetailsMap(prev => ({ ...prev, [subId]: detail }));
+        }
+      } catch (err) {
+        console.error("Lỗi khi tải chi tiết hồ sơ:", err);
+      } finally {
+        setLoadingDetailsForSubId(null);
       }
     }
   };
@@ -1737,13 +1837,18 @@ export default function App() {
     return templates
       .filter(t => {
         const matchesSearch = !query || t.name.toLowerCase().includes(query);
-        const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
+        const matchesStatus = userRole === 'user'
+          ? t.status === 'active'
+          : (statusFilter === 'all' || t.status === statusFilter);
         const matchesCategory = categoryScope === null
           ? true
           : categoryScope === 'uncategorized'
             ? !t.category_id
             : categoryScope.includes(t.category_id);
-        return matchesSearch && matchesStatus && matchesCategory;
+        const matchesParent = userRole === 'user'
+          ? !t.parent_template_id
+          : true;
+        return matchesSearch && matchesStatus && matchesCategory && matchesParent;
       })
       .sort((a, b) => {
         if (sortBy === 'name') return a.name.localeCompare(b.name, 'vi');
@@ -3034,119 +3139,376 @@ export default function App() {
 
           {/* Submissions View */}
           {activeView === 'dashboard' && sidebarActiveMenu === 'submissions' && (
-            <div className="glass-panel p-6 bg-white animate-fade-up space-y-4">
-              <div className="flex justify-between items-center pb-4 border-b border-slate-100">
-                <h3 className="text-base font-bold text-slate-800 font-display">Lịch sử nhận hồ sơ</h3>
-                <button
-                  onClick={fetchSubmissions}
-                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors cursor-pointer flex items-center gap-1"
-                >
-                  ↺ Tải lại
-                </button>
-              </div>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Left Column: Submissions List Table */}
+              <div className={`glass-panel p-6 bg-white animate-fade-up space-y-4 transition-all duration-300 ${expandedSubmissionId ? 'lg:col-span-6' : 'lg:col-span-12'}`}>
+                <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+                  <h3 className="text-base font-bold text-slate-800 font-display">Lịch sử nhận hồ sơ</h3>
+                  <button
+                    onClick={fetchSubmissions}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    ↺ Tải lại
+                  </button>
+                </div>
 
-              {isLoadingSubmissions ? (
-                <div className="py-12 text-center text-slate-400">
-                  <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mx-auto mb-3"></div>
-                  Đang tải danh sách hồ sơ...
-                </div>
-              ) : submissionHistory.length === 0 ? (
-                <div className="py-12 text-center text-slate-400">
-                  <div className="text-3xl mb-2">📥</div>
-                  Chưa nhận được hồ sơ nào từ khách hàng.
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs font-sans border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider">
-                        <th className="py-3.5 px-4 w-[25%]">Khách hàng</th>
-                        <th className="py-3.5 px-4 w-[15%]">Số điện thoại</th>
-                        <th className="py-3.5 px-4 w-[25%]">Biểu mẫu nộp</th>
-                        <th className="py-3.5 px-4 w-[15%]">Ngày nộp</th>
-                        <th className="py-3.5 px-4 w-[10%]">Trạng thái</th>
-                        <th className="py-3.5 px-4 text-right w-[10%]">Thao tác</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
-                      {submissionHistory.map(sub => {
-                        const isExpanded = expandedSubmissionId === sub.id;
-                        return (
-                          <Fragment key={sub.id}>
+                {isLoadingSubmissions ? (
+                  <div className="py-12 text-center text-slate-400">
+                    <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mx-auto mb-3"></div>
+                    Đang tải danh sách hồ sơ...
+                  </div>
+                ) : submissionHistory.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400">
+                    <div className="text-3xl mb-2">📥</div>
+                    Chưa nhận được hồ sơ nào từ khách hàng.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs font-sans border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider">
+                          <th className="py-3.5 px-4 w-[35%]">Khách hàng</th>
+                          {!expandedSubmissionId && <th className="py-3.5 px-4 w-[20%]">Số điện thoại</th>}
+                          <th className="py-3.5 px-4 w-[35%]">Biểu mẫu nộp</th>
+                          {!expandedSubmissionId && <th className="py-3.5 px-4 w-[15%]">Ngày nộp</th>}
+                          <th className="py-3.5 px-4 text-right w-[15%]">Thao tác</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+                        {submissionHistory.map(sub => {
+                          const isExpanded = expandedSubmissionId === sub.id;
+                          return (
                             <tr 
-                              className={`hover:bg-slate-50/70 transition-colors cursor-pointer ${isExpanded ? 'bg-slate-50/50' : ''}`}
+                              key={sub.id}
+                              className={`hover:bg-slate-50/70 transition-colors cursor-pointer ${
+                                isExpanded ? 'bg-emerald-50/40 border-l-2 border-emerald-500 font-semibold' : ''
+                              }`}
                               onClick={() => handleToggleExpandSubmission(sub.id)}
                             >
                               <td className="py-4 px-4 font-bold text-slate-900 flex items-center gap-2">
-                                <span className={`text-[10px] text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                                 {sub.customer_name}
                               </td>
-                              <td className="py-4 px-4 font-mono">{sub.customer_phone || 'N/A'}</td>
-                              <td className="py-4 px-4 max-w-[200px] truncate">{sub.template_name}</td>
-                              <td className="py-4 px-4 text-slate-500">{new Date(sub.completed_at).toLocaleString('vi-VN')}</td>
-                              <td className="py-4 px-4">
-                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
-                                  sub.status === 'completed' 
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                                    : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                }`}>
-                                  {sub.status === 'completed' ? 'Hoàn thành' : 'Thất bại'}
-                                </span>
-                              </td>
-                              <td className="py-4 px-4 text-right" onClick={e => e.stopPropagation()}>
+                              {!expandedSubmissionId && <td className="py-4 px-4 font-mono">{sub.customer_phone || 'N/A'}</td>}
+                              <td className="py-4 px-4 max-w-[180px] truncate">{sub.template_name}</td>
+                              {!expandedSubmissionId && <td className="py-4 px-4 text-slate-500">{new Date(sub.completed_at).toLocaleString('vi-VN')}</td>}
+                              <td className="py-4 px-4 text-right space-x-1.5" onClick={e => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleExpandSubmission(sub.id)}
+                                  className={`px-2 py-1 text-[10px] font-bold rounded-lg border transition-all cursor-pointer inline-flex items-center gap-1 shadow-sm ${
+                                    isExpanded 
+                                      ? 'text-slate-700 bg-slate-150 border-slate-350 hover:bg-slate-205' 
+                                      : 'text-slate-700 bg-slate-50 border-slate-200 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  👁️ Xem
+                                </button>
                                 <a
                                   href={`http://localhost:5000/api/submissions/${sub.id}/download`}
                                   download
-                                  className="px-2.5 py-1.5 text-[10px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1 shadow-sm"
+                                  className="px-2 py-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-250 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1 shadow-sm"
                                 >
-                                  📥 Tải trọn bộ
+                                  📥 Tải
                                 </a>
                               </td>
                             </tr>
-                            {isExpanded && (
-                              <tr>
-                                <td colSpan="6" className="bg-slate-50/40 p-4 border-t border-slate-100" onClick={e => e.stopPropagation()}>
-                                  <div className="pl-6 space-y-3">
-                                    <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                      Danh sách tài liệu chi tiết trong gói hồ sơ:
-                                    </h4>
-                                    {loadingFilesForSubId === sub.id ? (
-                                      <div className="py-3 text-slate-400 text-[11px] flex items-center gap-1.5">
-                                        <div className="w-3.5 h-3.5 border border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
-                                        Đang quét tài liệu...
-                                      </div>
-                                    ) : !submissionFilesMap[sub.id] || submissionFilesMap[sub.id].length === 0 ? (
-                                      <div className="py-2 text-slate-400 italic text-[11px]">Không tìm thấy file chi tiết.</div>
-                                    ) : (
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-w-4xl">
-                                        {submissionFilesMap[sub.id].map(filename => (
-                                          <div key={filename} className="flex justify-between items-center bg-white border border-slate-200 hover:border-slate-350 p-2.5 rounded-xl transition-all shadow-sm">
-                                            <span className="text-[11px] font-semibold text-slate-700 truncate pr-3" title={filename}>{filename}</span>
-                                            <a
-                                              href={`http://localhost:5000/api/submissions/${sub.id}/download-file?filename=${encodeURIComponent(filename)}`}
-                                              download
-                                              className="p-1 hover:bg-emerald-50 text-emerald-600 hover:text-emerald-700 rounded transition-colors shrink-0 cursor-pointer"
-                                              title={`Tải file ${filename}`}
-                                            >
-                                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.2">
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                              </svg>
-                                            </a>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Column: Tab/Panel next to the list to see detailed what was filled */}
+              {expandedSubmissionId && (() => {
+                const sub = submissionHistory.find(s => s.id === expandedSubmissionId);
+                if (!sub) return null;
+                return (
+                  <div className="lg:col-span-6 glass-panel p-6 bg-white border border-slate-200 rounded-2xl shadow-md space-y-5 max-h-[85vh] overflow-y-auto animate-fade-right">
+                    <div className="flex justify-between items-center pb-3 border-b border-slate-150">
+                      <div className="space-y-0.5">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Chi tiết hồ sơ nộp</span>
+                        <h4 className="text-sm font-black text-slate-900 font-display truncate max-w-[280px]" title={sub.customer_name}>
+                          {sub.customer_name}
+                        </h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSubmissionId(null)}
+                        className="w-7 h-7 rounded-full bg-slate-50 hover:bg-slate-150 text-slate-500 border border-slate-200 flex items-center justify-center text-xs font-bold cursor-pointer transition-colors shadow-sm"
+                        title="Đóng chi tiết"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {/* Meta info card */}
+                      <div className="bg-slate-50 border border-slate-150 rounded-xl p-3.5 space-y-2 text-[11px] text-slate-600 font-sans shadow-sm">
+                        <div className="flex justify-between">
+                          <span>Số điện thoại:</span>
+                          <strong className="text-slate-800 font-mono">{sub.customer_phone || 'N/A'}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Ngày nộp:</span>
+                          <strong className="text-slate-800">{new Date(sub.completed_at).toLocaleString('vi-VN')}</strong>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span>Trạng thái:</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
+                            sub.status === 'completed' 
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                              : 'bg-rose-50 text-rose-700 border border-rose-200'
+                          }`}>
+                            {sub.status === 'completed' ? 'Hoàn thành' : 'Thất bại'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Detail form data */}
+                      {loadingDetailsForSubId === sub.id ? (
+                        <div className="py-12 text-center text-slate-400 text-xs font-sans">
+                          <div className="w-5 h-5 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mx-auto mb-2.5"></div>
+                          Đang tải dữ liệu hồ sơ...
+                        </div>
+                      ) : !submissionDetailsMap[sub.id] ? (
+                        <div className="py-8 text-center text-slate-400 text-xs italic font-sans border border-dashed rounded-xl border-slate-200">
+                          Không tải được dữ liệu chi tiết từ server.
+                        </div>
+                      ) : (() => {
+                        const detail = submissionDetailsMap[sub.id];
+                        const values = detail.submission?.values_json?.values || {};
+                        const masterFields = detail.masterFields || [];
+                        const childFields = detail.childFields || [];
+                        const selectedChildIds = detail.submission?.values_json?.selectedChildIds || [];
+
+                        // Group child fields by template_id
+                        const childTemplatesMap = {};
+                        childFields.forEach(field => {
+                          if (!childTemplatesMap[field.template_id]) {
+                            childTemplatesMap[field.template_id] = {
+                              name: field.template_name,
+                              is_repeated: field.is_repeated === 1,
+                              fields: []
+                            };
+                          }
+                          childTemplatesMap[field.template_id].fields.push(field);
+                        });
+
+                        return (
+                          <div className="space-y-4">
+                            {/* Tabs selector */}
+                            <div className="flex border-b border-slate-200/80 pb-0.5">
+                              <button
+                                type="button"
+                                onClick={() => setDetailActiveTab('fields')}
+                                className={`flex-1 pb-2 text-[11px] font-bold text-center border-b-2 transition-all duration-150 cursor-pointer ${
+                                  detailActiveTab === 'fields'
+                                    ? 'border-emerald-500 text-emerald-600'
+                                    : 'border-transparent text-slate-400 hover:text-slate-600'
+                                }`}
+                              >
+                                📋 Dữ liệu nhập
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDetailActiveTab('preview')}
+                                className={`flex-1 pb-2 text-[11px] font-bold text-center border-b-2 transition-all duration-150 cursor-pointer ${
+                                  detailActiveTab === 'preview'
+                                    ? 'border-emerald-500 text-emerald-600'
+                                    : 'border-transparent text-slate-400 hover:text-slate-600'
+                                }`}
+                              >
+                                👁️ Văn bản xem trước
+                              </button>
+                            </div>
+
+                            {detailActiveTab === 'fields' ? (
+                              <div className="space-y-4">
+                                {/* Master fields */}
+                                <div className="bg-white rounded-xl border border-slate-150 p-4 space-y-3.5 shadow-sm">
+                                  <div className="text-[10px] font-bold text-slate-800 border-b border-slate-100 pb-2 uppercase tracking-wide font-display">
+                                    📋 Biểu mẫu chính: {detail.submission?.template_name}
                                   </div>
-                                </td>
-                              </tr>
+                                  {masterFields.length === 0 ? (
+                                    <div className="text-xs text-slate-400 italic font-sans">Không có thông tin trường điền.</div>
+                                  ) : (
+                                    <div className="grid grid-cols-1 gap-y-3.5">
+                                      {masterFields.map(field => {
+                                        const val = values[field.key_name];
+                                        const displayVal = typeof val === 'boolean' 
+                                          ? (val ? '✓ Có / Đồng ý' : '✗ Không') 
+                                          : (val || '—');
+                                        return (
+                                          <div key={field.key_name} className="flex flex-col gap-0.5 text-xs font-sans border-b border-slate-50 last:border-b-0 pb-1.5 last:pb-0">
+                                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{field.label}</span>
+                                            <span className="font-semibold text-slate-800 break-words mt-0.5">{displayVal}</span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Non-repeated child fields */}
+                                {Object.entries(childTemplatesMap)
+                                  .filter(([childId]) => selectedChildIds.includes(childId) && !childTemplatesMap[childId].is_repeated)
+                                  .map(([childId, childData]) => (
+                                    <div key={childId} className="bg-white rounded-xl border border-slate-150 p-4 space-y-3.5 shadow-sm">
+                                      <div className="text-[10px] font-bold text-slate-800 border-b border-slate-100 pb-2 uppercase tracking-wide font-display">
+                                        📄 Biểu mẫu con: {childData.name}
+                                      </div>
+                                      <div className="grid grid-cols-1 gap-y-3.5">
+                                        {childData.fields.map(field => {
+                                          const val = values[field.key_name];
+                                          const displayVal = typeof val === 'boolean' 
+                                            ? (val ? '✓ Có / Đồng ý' : '✗ Không') 
+                                            : (val || '—');
+                                          return (
+                                            <div key={field.key_name} className="flex flex-col gap-0.5 text-xs font-sans border-b border-slate-50 last:border-b-0 pb-1.5 last:pb-0">
+                                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{field.label}</span>
+                                              <span className="font-semibold text-slate-800 break-words mt-0.5">{displayVal}</span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+
+                                {/* Repeated child fields */}
+                                {Object.entries(childTemplatesMap)
+                                  .filter(([childId]) => selectedChildIds.includes(childId) && childTemplatesMap[childId].is_repeated)
+                                  .map(([childId, childData]) => {
+                                    const records = values[childId] || [];
+                                    return (
+                                      <div key={childId} className="bg-white rounded-xl border border-slate-150 p-4 space-y-3.5 shadow-sm">
+                                        <div className="text-[10px] font-bold text-slate-800 border-b border-slate-100 pb-2 flex items-center justify-between uppercase tracking-wide font-display">
+                                          <span>📂 Biểu mẫu con: {childData.name} (Lặp lại)</span>
+                                          <span className="text-[9px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-lg select-none">
+                                            {records.length} bản ghi
+                                          </span>
+                                        </div>
+                                        {records.length === 0 ? (
+                                          <div className="text-xs text-slate-400 italic font-sans">Không có bản ghi nào.</div>
+                                        ) : (
+                                          <div className="space-y-4">
+                                            {records.map((record, rIdx) => (
+                                              <div key={rIdx} className="bg-slate-50/50 border border-slate-200/80 rounded-xl p-3.5 space-y-3">
+                                                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200/50 pb-1.5 font-display">
+                                                  Bản ghi #{rIdx + 1}
+                                                </div>
+                                                <div className="grid grid-cols-1 gap-y-3">
+                                                  {childData.fields.map(field => {
+                                                    const val = record[field.key_name];
+                                                    const displayVal = typeof val === 'boolean' 
+                                                      ? (val ? '✓ Có / Đồng ý' : '✗ Không') 
+                                                      : (val || '—');
+                                                    return (
+                                                      <div key={field.key_name} className="flex flex-col gap-0.5 text-xs font-sans border-b border-slate-100/30 last:border-b-0 pb-1 last:pb-0">
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{field.label}</span>
+                                                        <span className="font-semibold text-slate-700 break-words mt-0.5">{displayVal}</span>
+                                                      </div>
+                                                    );
+                                                  })}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                            ) : (
+                              <div className="space-y-4">
+                                {(() => {
+                                  const subFiles = submissionFilesMap[sub.id] || [];
+                                  const selectedFile = activePreviewFilename || subFiles[0];
+                                  return (
+                                    <div className="space-y-4">
+                                      {/* File tabs selector if there are multiple files */}
+                                      {subFiles.length > 1 && (
+                                        <div className="flex flex-wrap gap-1.5 bg-slate-50 border border-slate-200/60 p-2 rounded-xl">
+                                          <div className="w-full text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 px-1 font-display">
+                                            Danh sách tệp tin trong hồ sơ:
+                                          </div>
+                                          {subFiles.map(filename => (
+                                            <button
+                                              key={filename}
+                                              type="button"
+                                              onClick={() => setActivePreviewFilename(filename)}
+                                              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all duration-150 cursor-pointer ${
+                                                selectedFile === filename
+                                                  ? 'bg-emerald-600 text-white shadow-sm border border-emerald-500'
+                                                  : 'bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-800 border border-slate-200'
+                                              }`}
+                                            >
+                                              📄 {filename}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                      
+                                      {/* Document preview container */}
+                                      {selectedFile ? (
+                                        <div className="bg-white rounded-xl border border-slate-150 p-4 space-y-3 shadow-sm">
+                                          <div className="text-[10px] font-bold text-slate-800 border-b border-slate-100 pb-2 uppercase tracking-wide font-display flex justify-between items-center">
+                                            <span>👁️ Xem trước: {selectedFile}</span>
+                                            <span className="text-[9px] font-semibold text-slate-400 font-sans">(Trộn động từ DB)</span>
+                                          </div>
+                                          <DocxFilePreview subId={sub.id} filename={selectedFile} />
+                                        </div>
+                                      ) : (
+                                        <div className="bg-white rounded-xl border border-slate-150 p-6 text-center text-slate-400 text-xs italic font-sans shadow-sm">
+                                          Không tìm thấy tệp tin nào để xem trước.
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                             )}
-                          </Fragment>
+                          </div>
                         );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      })()}
+
+                      {/* Generated files list */}
+                      <div className="bg-white rounded-xl border border-slate-150 p-4 space-y-3.5 shadow-sm font-sans">
+                        <div className="text-[10px] font-bold text-slate-800 border-b border-slate-100 pb-2 uppercase tracking-wide font-display">
+                          📄 Tệp kết quả sinh động (.docx):
+                        </div>
+                        {loadingFilesForSubId === sub.id ? (
+                          <div className="py-4 text-center text-slate-400 text-xs flex items-center justify-center gap-1.5">
+                            <div className="w-3.5 h-3.5 border border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin"></div>
+                            Đang quét danh sách file...
+                          </div>
+                        ) : !submissionFilesMap[sub.id] || submissionFilesMap[sub.id].length === 0 ? (
+                          <div className="py-2 text-slate-400 italic text-[11px] font-sans">Không tìm thấy file chi tiết.</div>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            {submissionFilesMap[sub.id].map(filename => (
+                              <div key={filename} className="flex justify-between items-center bg-slate-50 border border-slate-150 p-2.5 rounded-xl">
+                                <span className="text-[11px] font-semibold text-slate-700 truncate pr-3" title={filename}>{filename}</span>
+                                <a
+                                  href={`http://localhost:5000/api/submissions/${sub.id}/download-file?filename=${encodeURIComponent(filename)}`}
+                                  download
+                                  className="p-1 hover:bg-emerald-50 border border-transparent hover:border-emerald-250 text-emerald-600 rounded transition-colors shrink-0 cursor-pointer"
+                                  title={`Tải file ${filename}`}
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.2">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 

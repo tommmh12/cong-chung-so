@@ -1,10 +1,11 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const PizZip = require('pizzip');
+const Docxtemplater = require('docxtemplater');
 const archiver = require('archiver');
 require('dotenv').config();
 
@@ -613,7 +614,7 @@ app.put('/api/templates/:id/fields', async (req, res) => {
       }
 
       // Kích hoạt trạng thái active cho template khi đã cấu hình xong fields
-      await conn.query('UPDATE templates SET status = "active" WHERE id = ?', [templateId]);
+      await conn.query("UPDATE templates SET status = 'active' WHERE id = ?", [templateId]);
 
       await conn.commit();
       res.json({ message: 'Lưu cấu hình và gài biến thành công!' });
@@ -973,7 +974,7 @@ app.post('/api/submissions', async (req, res) => {
 
     // Lấy danh sách các child templates liên kết
     let [childTemplates] = await pool.query(
-      'SELECT * FROM templates WHERE parent_template_id = ? AND status = "active"',
+      "SELECT * FROM templates WHERE parent_template_id = ? AND status = 'active'",
       [templateId]
     );
 
@@ -1094,6 +1095,128 @@ app.get('/api/submissions', async (req, res) => {
   }
 });
 
+// 5c. Lấy chi tiết hồ sơ đã nộp và các trường cấu hình template tương ứng để map nhãn
+// Hàm trộn văn bản và lấy text trần trực tiếp từ RAM
+function getMergedDocumentText(templatePath, dataJson) {
+  try {
+    const content = fs.readFileSync(templatePath, 'binary');
+    const zip = new PizZip(content);
+    const doc = new Docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
+      delimiters: {
+        start: '{{',
+        end: '}}'
+      }
+    });
+    doc.render(dataJson);
+    return doc.getFullText();
+  } catch (error) {
+    console.error("Lỗi khi lấy văn bản đã trộn:", error);
+    return "Không thể trích xuất văn bản từ biểu mẫu.";
+  }
+}
+
+// 5c. Lấy chi tiết hồ sơ đã nộp và các trường cấu hình template tương ứng để map nhãn
+app.get('/api/submissions/:id/detail', async (req, res) => {
+  try {
+    const submissionId = req.params.id;
+    const [submissions] = await pool.query(
+      'SELECT s.id, s.template_id, s.customer_name, s.customer_phone, s.status, s.values_json, s.completed_at, t.name as template_name, t.file_path FROM document_submissions s JOIN templates t ON s.template_id = t.id WHERE s.id = ?',
+      [submissionId]
+    );
+
+    if (submissions.length === 0) {
+      return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
+    }
+
+    const submission = submissions[0];
+    if (typeof submission.values_json === 'string') {
+      try {
+        submission.values_json = JSON.parse(submission.values_json);
+      } catch (e) {
+        console.error("Failed to parse values_json in detail:", e);
+      }
+    }
+    const templateId = submission.template_id;
+
+    // Lấy cấu hình các trường của template chính
+    const [masterFields] = await pool.query(
+      'SELECT key_name, label, field_type, template_id FROM template_fields WHERE template_id = ? ORDER BY order_index ASC',
+      [templateId]
+    );
+
+    // Lấy cấu hình các trường của các template con liên kết
+    const [childFields] = await pool.query(
+      'SELECT f.key_name, f.label, f.field_type, f.template_id, t.name as template_name, t.is_repeated FROM template_fields f JOIN templates t ON f.template_id = t.id WHERE t.parent_template_id = ? ORDER BY t.name, f.order_index ASC',
+      [templateId]
+    );
+
+    // Tự động phân tích và sinh text cho văn bản chính
+    const { values, selectedChildIds } = submission.values_json || {};
+    const masterResult = prepareValuesForTemplate(masterFields, values || {}, submission.template_name);
+    const absoluteTemplatePath = path.join(__dirname, '..', submission.file_path);
+    
+    let mergedText = "";
+    if (fs.existsSync(absoluteTemplatePath)) {
+      mergedText = getMergedDocumentText(absoluteTemplatePath, masterResult.padded);
+    } else {
+      mergedText = "Tệp biểu mẫu gốc không tồn tại trên hệ thống.";
+    }
+
+    // Sinh text cho các văn bản con được chọn
+    let [childTemplates] = await pool.query(
+      "SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = 'active'",
+      [templateId]
+    );
+    if (Array.isArray(selectedChildIds)) {
+      childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
+    }
+
+    const childDocumentsText = [];
+    for (const child of childTemplates) {
+      const [cFields] = await pool.query(
+        'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
+        [child.id]
+      );
+      const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+      
+      if (fs.existsSync(absoluteChildTemplatePath)) {
+        if (child.is_repeated) {
+          const recordsList = (values || {})[child.id];
+          const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
+          recordsArray.forEach((recordVal, rIdx) => {
+            const prep = prepareValuesForSingleRecord(cFields, recordVal, values || {}, `${child.name} (Bản ghi ${rIdx + 1})`);
+            const textContent = getMergedDocumentText(absoluteChildTemplatePath, prep.padded);
+            childDocumentsText.push({
+              name: `${child.name} (Bản ghi ${rIdx + 1})`,
+              text: textContent
+            });
+          });
+        } else {
+          const prep = prepareValuesForTemplate(cFields, values || {}, child.name);
+          const textContent = getMergedDocumentText(absoluteChildTemplatePath, prep.padded);
+          childDocumentsText.push({
+            name: child.name,
+            text: textContent
+          });
+        }
+      }
+    }
+
+    res.json({
+      submission,
+      masterFields,
+      childFields,
+      mergedText,
+      childDocumentsText
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Không thể tải chi tiết hồ sơ.' });
+  }
+});
+
 // 6. Download file kết quả (Trộn động dữ liệu và trả về file ZIP hoặc DOCX tức thì từ RAM)
 app.get('/api/submissions/:id/download', async (req, res) => {
   try {
@@ -1107,12 +1230,21 @@ app.get('/api/submissions/:id/download', async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    let valuesJson = rows[0].values_json;
+    if (typeof valuesJson === 'string') {
+      try {
+        valuesJson = JSON.parse(valuesJson);
+      } catch (e) {
+        console.error("Failed to parse values_json in download:", e);
+      }
+    }
+    const { values, selectedChildIds } = valuesJson || {};
+    const safeValues = values || {};
     const parentTemplate = rows[0];
 
     // Lấy child templates liên kết
     let [childTemplates] = await pool.query(
-      'SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = "active"',
+      "SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = 'active'",
       [parentTemplate.template_id]
     );
     if (Array.isArray(selectedChildIds)) {
@@ -1122,7 +1254,7 @@ app.get('/api/submissions/:id/download', async (req, res) => {
     // Map repeated child records to parent suffix variables
     for (const child of childTemplates) {
       if (child.is_repeated) {
-        const recordsList = values[child.id];
+        const recordsList = safeValues[child.id];
         if (Array.isArray(recordsList)) {
           const [childFields] = await pool.query(
             'SELECT key_name, parent_field_key FROM template_fields WHERE template_id = ?',
@@ -1133,7 +1265,7 @@ app.get('/api/submissions/:id/download', async (req, res) => {
               const targetKey = cf.parent_field_key || cf.key_name;
               const sourceVal = recordData[cf.key_name];
               if (sourceVal !== undefined) {
-                values[`${targetKey}_${rIdx + 1}`] = sourceVal;
+                safeValues[`${targetKey}_${rIdx + 1}`] = sourceVal;
               }
             });
           });
@@ -1145,8 +1277,12 @@ app.get('/api/submissions/:id/download', async (req, res) => {
       'SELECT key_name, is_required, replace_text, label FROM template_fields WHERE template_id = ?',
       [parentTemplate.template_id]
     );
-    const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
+    const masterResult = prepareValuesForTemplate(parentFields, safeValues, parentTemplate.template_name);
     const absoluteTemplatePath = path.join(__dirname, '..', parentTemplate.file_path);
+
+    if (!fs.existsSync(absoluteTemplatePath)) {
+      return res.status(400).json({ error: `Tệp biểu mẫu gốc của '${parentTemplate.template_name}' không tồn tại trên máy chủ.` });
+    }
 
     const masterBuffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
     const safeName = parentTemplate.template_name.replace(/[^a-zA-Z0-9À-ỹ\s-_]/g, '');
@@ -1175,18 +1311,22 @@ app.get('/api/submissions/:id/download', async (req, res) => {
         [child.id]
       );
 
+      const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+      if (!fs.existsSync(absoluteChildTemplatePath)) {
+        console.warn(`Child template file not found: ${absoluteChildTemplatePath}`);
+        continue;
+      }
+
       if (child.is_repeated) {
-        const recordsList = values[child.id];
+        const recordsList = safeValues[child.id];
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
-          const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
-          const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+          const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], safeValues, `${child.name} (Bản ghi ${rIdx + 1})`);
           const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
           archive.append(childBuffer, { name: `${child.name}_Căn_${rIdx + 1}.docx` });
         }
       } else {
-        const prep = prepareValuesForTemplate(childFields, values, child.name);
-        const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+        const prep = prepareValuesForTemplate(childFields, safeValues, child.name);
         const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
         archive.append(childBuffer, { name: `${child.name}.docx` });
       }
@@ -1194,7 +1334,7 @@ app.get('/api/submissions/:id/download', async (req, res) => {
 
     archive.finalize();
   } catch (error) {
-    console.error(error);
+    console.error("Lỗi khi tải trọn bộ hồ sơ:", error);
     res.status(500).json({ error: 'Không thể tải trọn bộ hồ sơ.' });
   }
 });
@@ -1212,12 +1352,21 @@ app.get('/api/submissions/:id/files', async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    let valuesJson = rows[0].values_json;
+    if (typeof valuesJson === 'string') {
+      try {
+        valuesJson = JSON.parse(valuesJson);
+      } catch (e) {
+        console.error("Failed to parse values_json in files:", e);
+      }
+    }
+    const { values, selectedChildIds } = valuesJson || {};
+    const safeValues = values || {};
     const parentName = rows[0].template_name;
 
     // Lấy child templates
     let [childTemplates] = await pool.query(
-      'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ? AND status = "active"',
+      "SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ? AND status = 'active'",
       [rows[0].template_id]
     );
 
@@ -1232,7 +1381,7 @@ app.get('/api/submissions/:id/files', async (req, res) => {
     const fileNames = [`${parentName}.docx`];
     for (const child of childTemplates) {
       if (child.is_repeated) {
-        const recordsList = values[child.id];
+        const recordsList = safeValues[child.id];
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
           fileNames.push(`${child.name}_Căn_${rIdx + 1}.docx`);
@@ -1244,7 +1393,7 @@ app.get('/api/submissions/:id/files', async (req, res) => {
 
     return res.json(fileNames);
   } catch (error) {
-    console.error(error);
+    console.error("Lỗi khi liệt kê danh sách file:", error);
     res.status(500).json({ error: 'Không thể liệt kê danh sách file.' });
   }
 });
@@ -1267,13 +1416,22 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    let valuesJson = rows[0].values_json;
+    if (typeof valuesJson === 'string') {
+      try {
+        valuesJson = JSON.parse(valuesJson);
+      } catch (e) {
+        console.error("Failed to parse values_json in download-file:", e);
+      }
+    }
+    const { values, selectedChildIds } = valuesJson || {};
+    const safeValues = values || {};
     const parentTemplate = rows[0];
 
     // 1. Kiểm tra nếu file yêu cầu chính là file master mẹ
     if (filename === `${parentTemplate.template_name}.docx`) {
       let [childTemplatesForSuffix] = await pool.query(
-        'SELECT id, is_repeated FROM templates WHERE parent_template_id = ? AND status = "active"',
+        "SELECT id, is_repeated FROM templates WHERE parent_template_id = ? AND status = 'active'",
         [parentTemplate.template_id]
       );
       if (Array.isArray(selectedChildIds)) {
@@ -1281,7 +1439,7 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
       }
       for (const child of childTemplatesForSuffix) {
         if (child.is_repeated) {
-          const recordsList = values[child.id];
+          const recordsList = safeValues[child.id];
           if (Array.isArray(recordsList)) {
             const [childFields] = await pool.query(
               'SELECT key_name, parent_field_key FROM template_fields WHERE template_id = ?',
@@ -1292,7 +1450,7 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
                 const targetKey = cf.parent_field_key || cf.key_name;
                 const sourceVal = recordData[cf.key_name];
                 if (sourceVal !== undefined) {
-                  values[`${targetKey}_${rIdx + 1}`] = sourceVal;
+                  safeValues[`${targetKey}_${rIdx + 1}`] = sourceVal;
                 }
               });
             });
@@ -1304,8 +1462,13 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
         'SELECT key_name, is_required, replace_text, label FROM template_fields WHERE template_id = ?',
         [parentTemplate.template_id]
       );
-      const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
+      const masterResult = prepareValuesForTemplate(parentFields, safeValues, parentTemplate.template_name);
       const absoluteTemplatePath = path.join(__dirname, '..', parentTemplate.file_path);
+
+      if (!fs.existsSync(absoluteTemplatePath)) {
+        return res.status(400).json({ error: `Tệp biểu mẫu gốc '${parentTemplate.template_name}' không tồn tại trên máy chủ.` });
+      }
+
       const buffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
 
       res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
@@ -1315,7 +1478,7 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
 
     // 2. Kiểm tra các file con
     let [childTemplates] = await pool.query(
-      'SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = "active"',
+      "SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = 'active'",
       [parentTemplate.template_id]
     );
     if (Array.isArray(selectedChildIds)) {
@@ -1324,7 +1487,7 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
 
     for (const child of childTemplates) {
       if (child.is_repeated) {
-        const recordsList = values[child.id];
+        const recordsList = safeValues[child.id];
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
           if (filename === `${child.name}_Căn_${rIdx + 1}.docx`) {
@@ -1332,8 +1495,13 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
               'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
               [child.id]
             );
-            const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
+            const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], safeValues, `${child.name} (Bản ghi ${rIdx + 1})`);
             const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+
+            if (!fs.existsSync(absoluteChildTemplatePath)) {
+              return res.status(400).json({ error: `Tệp biểu mẫu con '${child.name}' không tồn tại trên máy chủ.` });
+            }
+
             const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
 
             res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
@@ -1347,8 +1515,13 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
             'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
             [child.id]
           );
-          const prep = prepareValuesForTemplate(childFields, values, child.name);
+          const prep = prepareValuesForTemplate(childFields, safeValues, child.name);
           const absoluteChildTemplatePath = path.join(__dirname, '..', child.file_path);
+
+          if (!fs.existsSync(absoluteChildTemplatePath)) {
+            return res.status(400).json({ error: `Tệp biểu mẫu con '${child.name}' không tồn tại trên máy chủ.` });
+          }
+
           const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
 
           res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
@@ -1360,7 +1533,7 @@ app.get('/api/submissions/:id/download-file', async (req, res) => {
 
     return res.status(404).json({ error: 'Không tìm thấy file tương ứng trong hồ sơ.' });
   } catch (error) {
-    console.error(error);
+    console.error("Lỗi khi tải file lẻ:", error);
     res.status(500).json({ error: 'Không thể tải file lẻ.' });
   }
 });

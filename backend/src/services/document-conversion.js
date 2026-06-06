@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const util = require('util');
+const execFilePromise = util.promisify(execFile);
 
 const WORD_EXTENSIONS = new Set(['.doc', '.docx']);
 const DOCX_EXTENSION = '.docx';
@@ -12,6 +15,53 @@ const NETWORK_ERROR_CODES = new Set([
   'ENETUNREACH',
   'ETIMEDOUT'
 ]);
+
+async function convertDocWithLibreOffice(inputPath, outputDir) {
+  let command = 'libreoffice';
+  let fallbackCommand = 'soffice';
+
+  if (process.platform === 'win32') {
+    const commonPaths = [
+      'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+      'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe'
+    ];
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        command = p;
+        fallbackCommand = null;
+        break;
+      }
+    }
+  }
+
+  try {
+    await execFilePromise(command, [
+      '--headless',
+      '--convert-to',
+      'docx',
+      inputPath,
+      '--outdir',
+      outputDir
+    ]);
+  } catch (error) {
+    if (fallbackCommand) {
+      try {
+        await execFilePromise(fallbackCommand, [
+          '--headless',
+          '--convert-to',
+          'docx',
+          inputPath,
+          '--outdir',
+          outputDir
+        ]);
+      } catch (innerError) {
+        throw new Error(`LibreOffice/Soffice conversion failed: ${innerError.message}`);
+      }
+    } else {
+      throw new Error(`LibreOffice conversion failed: ${error.message}`);
+    }
+  }
+}
 
 async function convertDocWithService(inputPath, outputPath) {
   const controller = new AbortController();
@@ -88,7 +138,19 @@ async function ensureDocxForTemplate(inputPath, options = {}) {
   await fs.promises.mkdir(conversionDir, { recursive: true });
 
   try {
-    await convertDocWithService(inputPath, outputPath);
+    // Try converting using LibreOffice first since it's locally installed and very fast
+    try {
+      await convertDocWithLibreOffice(inputPath, conversionDir);
+    } catch (libreError) {
+      console.warn('LibreOffice conversion failed or not found, falling back to .NET microservice:', libreError.message);
+      // Fallback to .NET microservice
+      await convertDocWithService(inputPath, outputPath);
+    }
+
+    // Double-check the file exists at the expected path
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('Không tìm thấy file .docx sau khi chuyển đổi.');
+    }
 
     return {
       outputPath,

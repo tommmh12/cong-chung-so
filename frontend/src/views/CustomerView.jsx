@@ -8,7 +8,6 @@ import {
 import Notification from '../components/Notification';
 import {
   API_BASE,
-  getFieldStep,
   getGroupedFields,
   generateId
 } from '../utils/helpers';
@@ -506,15 +505,19 @@ export default function CustomerView() {
     }
   }, [selectedChildIds, selectedTemplate, previewTemplateId]);
 
-  const hasActiveFields = (stepNum) => {
-    if (stepNum === 1) return true;
-    return fields.some(f =>
-      getFieldStep(f) === stepNum &&
-      (!f.childTemplateId || selectedChildIds.includes(f.childTemplateId))
-    );
-  };
-
-  const totalSteps = 4;
+  // Build steps dynamically: step 1 = main template, step N = Nth selected child with fields
+  const activeSteps = (() => {
+    const steps = [{ step: 1, label: selectedTemplate?.name || 'Thông tin hợp đồng', childId: null }];
+    const activeChildren = linkedChildren.filter(c => selectedChildIds.includes(c.id));
+    let stepNum = 2;
+    for (const child of activeChildren) {
+      if (fields.some(f => f.childTemplateId === child.id)) {
+        steps.push({ step: stepNum++, label: child.name, childId: child.id });
+      }
+    }
+    return steps;
+  })();
+  const totalSteps = activeSteps[activeSteps.length - 1]?.step || 1;
 
   const renderCategoryTree = (parentId = null, depth = 0) => {
     return getCategoryChildren(parentId).map(category => {
@@ -1339,37 +1342,28 @@ export default function CustomerView() {
                   </div>
                 </div>
 
-                {/* Stepper */}
+                {/* Stepper — dynamic from linked forms */}
                 <div className="lx-stepper">
-                  {[
-                    { step: 1, label: 'Hợp đồng' },
-                    { step: 2, label: 'Thuế TNCN' },
-                    { step: 3, label: 'Cây trồng' },
-                    { step: 4, label: 'Đất PNN' }
-                  ].map((item, index) => {
-                    const stepActive = hasActiveFields(item.step);
+                  {activeSteps.map((item, index) => {
                     const isCurrent = currentStep === item.step;
-                    const isCompleted = currentStep > item.step && stepActive;
+                    const isCompleted = currentStep > item.step;
+                    const shortLabel = item.label.length > 20 ? item.label.slice(0, 20) + '…' : item.label;
                     return (
                       <Fragment key={item.step}>
-                        <div
-                          className={`lx-step ${isCurrent ? 'active' : ''} ${isCompleted ? 'done' : ''}`}
-                          style={{ opacity: !stepActive ? 0.4 : 1 }}
-                        >
+                        <div className={`lx-step ${isCurrent ? 'active' : ''} ${isCompleted ? 'done' : ''}`}>
                           <button
                             type="button"
                             className="lx-step-num"
-                            disabled={!stepActive}
-                            onClick={() => stepActive && setCurrentStep(item.step)}
-                            style={{ cursor: stepActive ? 'pointer' : 'default', border: 'none', background: 'inherit', color: 'inherit', padding: 0, width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700 }}
+                            onClick={() => setCurrentStep(item.step)}
+                            style={{ cursor: 'pointer', border: 'none', background: 'inherit', color: 'inherit', padding: 0, width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700 }}
                           >
                             {isCompleted
                               ? <span className="material-symbols-outlined" style={{ fontSize: 13 }}>check</span>
                               : item.step}
                           </button>
-                          <span className="lx-step-label">{item.label}</span>
+                          <span className="lx-step-label">{shortLabel}</span>
                         </div>
-                        {index < 3 && <div className="lx-step-line" />}
+                        {index < activeSteps.length - 1 && <div className="lx-step-line" />}
                       </Fragment>
                     );
                   })}
@@ -1378,41 +1372,6 @@ export default function CustomerView() {
                 {/* Form scroll area */}
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                   <form onSubmit={handleFormSubmit} style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-                    {/* Customer info (step 1) */}
-                    {currentStep === 1 && (
-                      <div className="lx-card">
-                        <div className="lx-card-header">
-                          <span className="lx-card-title" style={{ fontSize: 13 }}>Thông tin khách hàng liên hệ</span>
-                        </div>
-                        <div style={{ padding: '14px 16px' }}>
-                          <div className="lx-form-row">
-                            <div className="lx-form-group">
-                              <label className="lx-label">Họ và tên khách hàng <span style={{ color: '#ba1a1a' }}>*</span></label>
-                              <input
-                                className="lx-input"
-                                type="text"
-                                required
-                                value={customerName}
-                                onChange={e => setCustomerName(e.target.value)}
-                                placeholder="Ví dụ: Nguyễn Văn A"
-                              />
-                            </div>
-                            <div className="lx-form-group">
-                              <label className="lx-label">Số điện thoại liên hệ <span style={{ color: '#ba1a1a' }}>*</span></label>
-                              <input
-                                className="lx-input"
-                                type="text"
-                                required
-                                value={customerPhone}
-                                onChange={e => setCustomerPhone(e.target.value)}
-                                placeholder="Ví dụ: 0912345678"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
 
                     {/* Linked child document selection (step 1) */}
                     {currentStep === 1 && linkedChildren && linkedChildren.length > 0 && (
@@ -1484,10 +1443,12 @@ export default function CustomerView() {
                     {/* Dynamic fields */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                       {(() => {
-                        const stepFields = fields.filter(f =>
-                          getFieldStep(f) === currentStep &&
-                          (!f.childTemplateId || selectedChildIds.includes(f.childTemplateId))
-                        );
+                        const currentStepDef = activeSteps.find(s => s.step === currentStep);
+                        const stepFields = fields.filter(f => {
+                          if (!currentStepDef) return false;
+                          if (currentStepDef.childId === null) return !f.childTemplateId;
+                          return f.childTemplateId === currentStepDef.childId;
+                        });
                         if (stepFields.length === 0) {
                           return (
                             <div className="lx-empty">
@@ -1496,6 +1457,52 @@ export default function CustomerView() {
                               <div style={{ marginTop: 4, fontSize: 12, color: '#76777d' }}>Bạn có thể nhấn "Tiếp theo" để tiếp tục.</div>
                             </div>
                           );
+                        }
+
+                        const hasLabelFields = stepFields.some(f => f.field_type === 'label');
+                        if (hasLabelFields) {
+                          return stepFields.map(field => {
+                            if (field.field_type === 'label') {
+                              return (
+                                <div key={field.id} style={{ background: '#1e3a5f', color: '#ffffff', padding: '10px 16px', borderRadius: 6, fontWeight: 700, fontSize: 13, letterSpacing: '0.03em', marginTop: 4 }}>
+                                  {field.label}
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={field.id} className="lx-form-group" style={{ padding: '0 2px' }}>
+                                <label className="lx-label">
+                                  {field.label}
+                                  {!!field.is_required && <span style={{ color: '#ba1a1a' }}> *</span>}
+                                </label>
+                                {field.field_type === 'text' && (
+                                  <input className="lx-input" type="text" required={!!field.is_required}
+                                    value={formData[field.key_name] || ''}
+                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
+                                )}
+                                {field.field_type === 'date' && (
+                                  <input className="lx-input" type="date" required={!!field.is_required}
+                                    value={formData[field.key_name] || ''}
+                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
+                                )}
+                                {field.field_type === 'number' && (
+                                  <input className="lx-input" type="number" required={!!field.is_required}
+                                    value={formData[field.key_name] || ''}
+                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
+                                )}
+                                {field.field_type === 'boolean' && (
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '7px 10px', border: '1px solid #c6c6cd', borderRadius: 4, background: '#f7f9fb' }}>
+                                    <input type="checkbox" checked={!!formData[field.key_name]}
+                                      onChange={e => setFormData({ ...formData, [field.key_name]: e.target.checked })}
+                                      style={{ accentColor: '#000000', width: 14, height: 14 }} />
+                                    <span style={{ fontSize: 12, color: '#45464d', fontWeight: 500, textTransform: 'none', letterSpacing: 'normal' }}>
+                                      Kích hoạt / Xác nhận tùy chọn này
+                                    </span>
+                                  </label>
+                                )}
+                              </div>
+                            );
+                          });
                         }
 
                         return Object.entries(getGroupedFields(stepFields)).sort(([a], [b]) => a.localeCompare(b)).map(([groupName, groupFields]) => {
@@ -1673,73 +1680,55 @@ export default function CustomerView() {
 
                     {/* Navigation buttons */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, paddingTop: 4, paddingBottom: 8 }}>
-                      {currentStep > 1 ? (
-                        <button
-                          type="button"
-                          className="lx-btn lx-btn-secondary"
-                          onClick={() => {
-                            let prev = currentStep - 1;
-                            while (prev >= 1) {
-                              const prevStepFields = fields.filter(f =>
-                                getFieldStep(f) === prev &&
-                                (!f.childTemplateId || selectedChildIds.includes(f.childTemplateId))
-                              );
-                              if (prevStepFields.length > 0 || prev === 1) break;
-                              prev--;
-                            }
-                            setCurrentStep(Math.max(prev, 1));
-                          }}
-                        >
-                          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_back</span>
-                          Quay lại
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="lx-btn lx-btn-ghost"
-                          onClick={() => {
-                            if (window.confirm("Bạn có chắc muốn hủy hồ sơ và quay lại? Dữ liệu đã nhập sẽ bị mất.")) {
-                              setActiveView('dashboard');
-                            }
-                          }}
-                        >
-                          Hủy hồ sơ
-                        </button>
-                      )}
+                      {(() => {
+                        const currentIdx = activeSteps.findIndex(s => s.step === currentStep);
+                        return currentIdx > 0 ? (
+                          <button
+                            type="button"
+                            className="lx-btn lx-btn-secondary"
+                            onClick={() => setCurrentStep(activeSteps[currentIdx - 1].step)}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_back</span>
+                            Quay lại
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="lx-btn lx-btn-ghost"
+                            onClick={() => {
+                              if (window.confirm("Bạn có chắc muốn hủy hồ sơ và quay lại? Dữ liệu đã nhập sẽ bị mất.")) {
+                                setActiveView('dashboard');
+                              }
+                            }}
+                          >
+                            Hủy hồ sơ
+                          </button>
+                        );
+                      })()}
 
-                      {currentStep < totalSteps ? (
-                        <button
-                          type="button"
-                          className="lx-btn lx-btn-primary"
-                          onClick={() => {
-                            let next = currentStep + 1;
-                            while (next <= totalSteps) {
-                              const nextStepFields = fields.filter(f =>
-                                getFieldStep(f) === next &&
-                                (!f.childTemplateId || selectedChildIds.includes(f.childTemplateId))
-                              );
-                              if (nextStepFields.length > 0 || next === totalSteps) break;
-                              next++;
-                            }
-                            setCurrentStep(Math.min(next, totalSteps));
-                          }}
-                        >
-                          Tiếp theo
-                          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_forward</span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="lx-btn lx-btn-primary"
-                          onClick={() => {
-                            setPreviewActiveDocIdx(0);
-                            setActiveView('preview');
-                          }}
-                        >
-                          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>visibility</span>
-                          Xem trước hồ sơ
-                        </button>
-                      )}
+                      {(() => {
+                        const currentIdx = activeSteps.findIndex(s => s.step === currentStep);
+                        const isLastStep = currentIdx === activeSteps.length - 1;
+                        return isLastStep ? (
+                          <button
+                            type="button"
+                            className="lx-btn lx-btn-primary"
+                            onClick={() => { setPreviewActiveDocIdx(0); setActiveView('preview'); }}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>visibility</span>
+                            Xem trước hồ sơ
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="lx-btn lx-btn-primary"
+                            onClick={() => setCurrentStep(activeSteps[currentIdx + 1].step)}
+                          >
+                            Tiếp theo
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_forward</span>
+                          </button>
+                        );
+                      })()}
                     </div>
                   </form>
                 </div>

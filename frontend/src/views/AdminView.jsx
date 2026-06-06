@@ -26,6 +26,9 @@ export default function AdminView() {
   const [fields, setFields] = useState([]);
   const [parentFields, setParentFields] = useState([]);
   const [linkedChildren, setLinkedChildren] = useState([]);
+  const [activeConfigTab, setActiveConfigTab] = useState(null); // null = parent tab, or child template object
+  const [parentTabFields, setParentTabFields] = useState([]); // parent's fields saved when editing child tab
+  const [tabFieldsCache, setTabFieldsCache] = useState({}); // { [templateId]: fields[] } — preserves unsaved changes across tab switches
 
   // Undo/History State
   const [fieldsHistory, setFieldsHistory] = useState([]);
@@ -45,7 +48,13 @@ export default function AdminView() {
   const [quickKey, setQuickKey] = useState('');
   const [quickLabel, setQuickLabel] = useState('');
   const [quickType, setQuickType] = useState('text');
+  const [quickInheritMode, setQuickInheritMode] = useState(false);
+  const [quickParentFieldKey, setQuickParentFieldKey] = useState('');
   const [showManualAdd, setShowManualAdd] = useState(false);
+  const [showLabelAdd, setShowLabelAdd] = useState(false);
+  const [labelTitle, setLabelTitle] = useState('');
+  const [draggedIdx, setDraggedIdx] = useState(null);
+  const [dragOverIdx, setDragOverIdx] = useState(null);
 
   // Modal Dialogs
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -254,8 +263,11 @@ export default function AdminView() {
         body: formData
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        throw new Error('Không thể tải lên biểu mẫu');
+        const failedResult = data.results?.find(r => r.status === 'failed');
+        const errMsg = failedResult?.error || data.message || 'Không thể tải lên biểu mẫu';
+        throw new Error(errMsg);
       }
 
       showNotification('Đã tải lên và phân tích biểu mẫu thành công!');
@@ -306,6 +318,57 @@ export default function AdminView() {
     }
   };
 
+  const handleSwitchConfigTab = async (child) => {
+    // Save current tab's fields to cache before switching
+    const currentId = activeConfigTab ? activeConfigTab.id : selectedTemplate.id;
+    const updatedCache = { ...tabFieldsCache, [currentId]: fields };
+    setTabFieldsCache(updatedCache);
+
+    setSelectedText('');
+    setQuickInheritMode(false);
+    setQuickParentFieldKey('');
+
+    if (!child) {
+      // Switch back to parent tab — restore from cache or fallback to parentTabFields
+      const restoredFields = updatedCache[selectedTemplate.id] ?? parentTabFields;
+      setFields(restoredFields);
+      setFieldsHistory([restoredFields]);
+      setHistoryIndex(0);
+      setActiveConfigTab(null);
+      setHasUnsavedManual(updatedCache[selectedTemplate.id] !== undefined);
+      return;
+    }
+
+    // Already visited this child tab — restore from cache
+    if (updatedCache[child.id]) {
+      if (activeConfigTab === null) setParentTabFields(fields);
+      setFields(updatedCache[child.id]);
+      setFieldsHistory([updatedCache[child.id]]);
+      setHistoryIndex(0);
+      setActiveConfigTab(child);
+      setHasUnsavedManual(true);
+      return;
+    }
+
+    // First visit to this child tab — fetch from server
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/templates/${child.id}/form`);
+      if (!res.ok) throw new Error('Không thể tải cấu hình phụ lục');
+      const data = await res.json();
+      if (activeConfigTab === null) setParentTabFields(fields);
+      setFields(data.fields);
+      setFieldsHistory([data.fields]);
+      setHistoryIndex(0);
+      setActiveConfigTab(child);
+      setHasUnsavedManual(false);
+    } catch (err) {
+      showNotification(err.message, 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleUpdateTemplateCategory = async (templateId, categoryId) => {
     try {
       await fetch(`${API_BASE}/templates/${templateId}/category`, {
@@ -334,6 +397,42 @@ export default function AdminView() {
   // Quick field generator from text tagging
   const handleAddQuickField = (e) => {
     e.preventDefault();
+
+    // Inherit mode: map to a parent field
+    if (quickInheritMode) {
+      if (!quickParentFieldKey) {
+        showNotification('Vui lòng chọn trường từ template cha', 'error');
+        return;
+      }
+      const parentField = parentTabFields.find(f => f.key_name === quickParentFieldKey);
+      if (!parentField) return;
+      // Auto-suffix key_name if already used (allow multiple inherits of same parent field)
+      let inheritKey = parentField.key_name;
+      let suffix = 2;
+      while (fields.some(f => f.key_name === inheritKey)) {
+        inheritKey = `${parentField.key_name}_${suffix++}`;
+      }
+      const inheritedField = {
+        id: generateId(),
+        key_name: inheritKey,
+        label: parentField.label,
+        field_type: parentField.field_type,
+        is_required: parentField.is_required,
+        order_index: fields.length,
+        replace_text: selectedText,
+        paragraph_context: paragraphContext,
+        parent_field_key: parentField.key_name
+      };
+      updateFieldsAndHistory([...fields, inheritedField]);
+      setSelectedText('');
+      setParagraphContext('');
+      setQuickInheritMode(false);
+      setQuickParentFieldKey('');
+      showNotification(`Đã kế thừa trường {{${parentField.key_name}}} từ template cha!`);
+      window.getSelection()?.removeAllRanges();
+      return;
+    }
+
     if (!quickKey || !quickLabel) {
       showNotification('Vui lòng điền đầy đủ mã biến và nhãn hiển thị', 'error');
       return;
@@ -368,6 +467,7 @@ export default function AdminView() {
 
   const handleOpenManualAdd = () => {
     setShowManualAdd(true);
+    setShowLabelAdd(false);
     setSelectedText('');
     setParagraphContext('');
     setQuickKey('');
@@ -407,11 +507,36 @@ export default function AdminView() {
     showNotification(`Đã thêm thủ công biến {{${cleanKey}}}`);
   };
 
+  const handleAddLabelField = (e) => {
+    e.preventDefault();
+    if (!labelTitle.trim()) {
+      showNotification('Vui lòng nhập nội dung tiêu đề nhóm', 'error');
+      return;
+    }
+    const key = `label_section_${Date.now()}`;
+    const newField = {
+      id: generateId(),
+      key_name: key,
+      label: labelTitle.trim(),
+      field_type: 'label',
+      is_required: 0,
+      order_index: fields.length,
+      replace_text: null,
+      paragraph_context: null,
+      parent_field_key: null
+    };
+    updateFieldsAndHistory([...fields, newField]);
+    setShowLabelAdd(false);
+    setLabelTitle('');
+    showNotification('Đã thêm tiêu đề nhóm');
+  };
+
   // Save fields configuration
   const handleSaveConfig = async () => {
     setIsLoading(true);
+    const saveTargetId = activeConfigTab ? activeConfigTab.id : selectedTemplate.id;
     try {
-      const res = await fetch(`${API_BASE}/templates/${selectedTemplate.id}/fields`, {
+      const res = await fetch(`${API_BASE}/templates/${saveTargetId}/fields`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fields })
@@ -423,6 +548,7 @@ export default function AdminView() {
 
       showNotification('Đã lưu cấu hình biến và kích hoạt thành công!');
       setHasUnsavedManual(false);
+      setTabFieldsCache(prev => { const next = { ...prev }; delete next[saveTargetId]; return next; });
       fetchData();
     } catch (err) {
       showNotification(err.message, 'error');
@@ -1426,6 +1552,9 @@ export default function AdminView() {
                   onClick={() => {
                     setSidebarActiveMenu('templates');
                     setActiveView('dashboard');
+                    setActiveConfigTab(null);
+                    setParentTabFields([]);
+                    setTabFieldsCache({});
                   }}
                 >
                   <span className="material-symbols-outlined" style={{ fontSize: 16 }}>arrow_back</span>
@@ -1471,6 +1600,61 @@ export default function AdminView() {
                 </div>
               </div>
 
+              {/* Template tab switcher — only shown when there are linked children */}
+              {linkedChildren.length > 0 && (
+                <div style={{ display: 'flex', gap: 0, marginBottom: 0, borderBottom: '2px solid #e6e8ea', overflowX: 'auto' }}>
+                  {/* Parent tab */}
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchConfigTab(null)}
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: 13,
+                      fontWeight: activeConfigTab === null ? 700 : 500,
+                      color: activeConfigTab === null ? '#009668' : '#45464d',
+                      background: 'transparent',
+                      border: 'none',
+                      borderBottom: activeConfigTab === null ? '2px solid #009668' : '2px solid transparent',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      marginBottom: -2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6
+                    }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: 14 }}>description</span>
+                    {selectedTemplate.name}
+                  </button>
+                  {/* Child tabs */}
+                  {linkedChildren.map(child => (
+                    <button
+                      key={child.id}
+                      type="button"
+                      onClick={() => handleSwitchConfigTab(child)}
+                      style={{
+                        padding: '8px 16px',
+                        fontSize: 13,
+                        fontWeight: activeConfigTab?.id === child.id ? 700 : 500,
+                        color: activeConfigTab?.id === child.id ? '#3b5bdb' : '#45464d',
+                        background: 'transparent',
+                        border: 'none',
+                        borderBottom: activeConfigTab?.id === child.id ? '2px solid #3b5bdb' : '2px solid transparent',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        marginBottom: -2,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: 14 }}>attach_file</span>
+                      {child.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Split panel */}
               <div
                 ref={splitContainerRef}
@@ -1481,49 +1665,73 @@ export default function AdminView() {
                 <div
                   style={{ width: isMobile ? '100%' : `${leftWidth}%`, display: 'flex', flexDirection: 'column', overflowY: 'auto', gap: 16, padding: '4px 0' }}
                 >
-                  {/* Template info */}
-                  <div className="lx-card" style={{ padding: 16 }}>
-                    <div style={{ marginBottom: 12 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#009668' }}>Chi tiết biểu mẫu</span>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: '#191c1e', marginTop: 4 }}>{selectedTemplate.name}</div>
-                    </div>
-                    <div className="lx-form-row" style={{ marginBottom: 12 }}>
-                      <div className="lx-form-group">
-                        <label className="lx-label">Danh mục thư viện</label>
-                        <select
-                          className="lx-select"
-                          value={selectedTemplate.category_id || ''}
-                          onChange={(e) => {
-                            handleUpdateTemplateCategory(selectedTemplate.id, e.target.value);
-                            setSelectedTemplate(prev => prev ? { ...prev, category_id: e.target.value || null } : prev);
-                          }}
-                        >
-                          <option value="">Chưa phân loại</option>
-                          {getFlattenedCategoryOptions().map(category => (
-                            <option key={category.id} value={category.id}>{category.label}</option>
-                          ))}
-                        </select>
+                  {/* Template info + linked children combined */}
+                  <div style={{ background: '#ffffff', border: '1px solid #c6c6cd', borderRadius: 8, padding: 14 }}>
+                    {/* Header row */}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#009668' }}>Chi tiết biểu mẫu</span>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: '#191c1e', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedTemplate.name}</div>
                       </div>
-                      <div className="lx-form-group">
-                        <label className="lx-label">Quan hệ biểu mẫu</label>
-                        <button
-                          type="button"
-                          className={`lx-btn lx-btn-sm ${selectedTemplate.parent_template_id ? 'lx-btn-ghost' : 'lx-btn-secondary'}`}
-                          style={{ width: '100%', justifyContent: 'flex-start' }}
-                          onClick={() => handleOpenLinkModal(selectedTemplate)}
-                          disabled={!!selectedTemplate.parent_template_id}
-                        >
-                          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>link</span>
-                          {selectedTemplate.parent_template_id
-                            ? 'Biểu mẫu con'
-                            : `Liên kết file con (${selectedTemplate.children_count || 0})`}
-                        </button>
+                      {selectedTemplate.parent_template_id ? (
+                        <span className="lx-badge" style={{ flexShrink: 0, marginTop: 2 }}>Phụ lục</span>
+                      ) : null}
+                    </div>
+
+                    {/* Category */}
+                    <div className="lx-form-group" style={{ marginBottom: 10 }}>
+                      <label className="lx-label">Danh mục thư viện</label>
+                      <select
+                        className="lx-select"
+                        value={selectedTemplate.category_id || ''}
+                        onChange={(e) => {
+                          handleUpdateTemplateCategory(selectedTemplate.id, e.target.value);
+                          setSelectedTemplate(prev => prev ? { ...prev, category_id: e.target.value || null } : prev);
+                        }}
+                      >
+                        <option value="">Chưa phân loại</option>
+                        {getFlattenedCategoryOptions().map(category => (
+                          <option key={category.id} value={category.id}>{category.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Linked children (only for parent templates) */}
+                    {!selectedTemplate.parent_template_id && (
+                      <div style={{ borderTop: '1px solid #e6e8ea', paddingTop: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: linkedChildren.length > 0 ? 8 : 6 }}>
+                          <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#45464d' }}>account_tree</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#45464d', flex: 1 }}>
+                            Phụ lục ({linkedChildren.length})
+                          </span>
+                          <button
+                            type="button"
+                            className="lx-btn lx-btn-secondary lx-btn-sm"
+                            onClick={() => handleOpenLinkModal(selectedTemplate)}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: 13 }}>add_link</span>
+                            Quản lý
+                          </button>
+                        </div>
+                        {linkedChildren.length === 0 ? (
+                          <div style={{ fontSize: 12, color: '#76777d', fontStyle: 'italic' }}>
+                            Chưa có phụ lục. Nhấn "Quản lý" để liên kết.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                            {linkedChildren.map(child => (
+                              <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#f7f9fb', borderRadius: 4, border: '1px solid #e6e8ea', minWidth: 0 }}>
+                                <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#009668', flexShrink: 0 }}>description</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{child.name}</span>
+                                {child.is_repeated === 1 && (
+                                  <span style={{ fontSize: 9, fontWeight: 700, background: '#e0faf0', color: '#009668', borderRadius: 3, padding: '2px 4px', flexShrink: 0 }}>LẶP</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                    <div style={{ fontSize: 12, color: '#45464d', borderTop: '1px solid #e6e8ea', paddingTop: 10 }}>
-                      <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: 'middle', marginRight: 4, color: '#009668' }}>tips_and_updates</span>
-                      <strong>Mẹo:</strong> Bôi đen chữ trên bản xem trước Word bên phải để tạo biến ngay lập tức!
-                    </div>
+                    )}
                   </div>
 
                   {/* Quick-tag box when text is selected */}
@@ -1544,42 +1752,89 @@ export default function AdminView() {
                         Đang chọn: <strong style={{ color: '#191c1e' }}>"{selectedText}"</strong>
                       </div>
                       <form onSubmit={handleAddQuickField} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <div className="lx-form-group">
-                          <label className="lx-label">Mã biến (không dấu/khoảng trắng)</label>
-                          <input
-                            type="text"
-                            required
-                            value={quickKey}
-                            onChange={(e) => setQuickKey(e.target.value)}
-                            placeholder="vd: ho_ten_chu_dat"
-                            className="lx-input"
-                          />
-                        </div>
-                        <div className="lx-form-row">
-                          <div className="lx-form-group">
-                            <label className="lx-label">Nhãn hiển thị</label>
-                            <input
-                              type="text"
-                              required
-                              value={quickLabel}
-                              onChange={(e) => setQuickLabel(e.target.value)}
-                              placeholder="vd: Họ tên chủ đất"
-                              className="lx-input"
-                            />
+                        {/* Inherit toggle — only shown when editing a child tab with parent fields available */}
+                        {activeConfigTab && parentTabFields.filter(f => f.field_type !== 'label').length > 0 && (
+                          <div style={{ display: 'flex', gap: 4, background: '#f0f4ff', borderRadius: 6, padding: 3 }}>
+                            <button
+                              type="button"
+                              onClick={() => setQuickInheritMode(false)}
+                              style={{ flex: 1, padding: '5px 8px', fontSize: 12, fontWeight: quickInheritMode ? 400 : 700, background: quickInheritMode ? 'transparent' : '#ffffff', border: 'none', borderRadius: 4, cursor: 'pointer', color: quickInheritMode ? '#45464d' : '#3b5bdb', boxShadow: quickInheritMode ? 'none' : '0 1px 3px rgba(0,0,0,0.12)' }}
+                            >
+                              Tạo biến mới
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setQuickInheritMode(true)}
+                              style={{ flex: 1, padding: '5px 8px', fontSize: 12, fontWeight: quickInheritMode ? 700 : 400, background: quickInheritMode ? '#ffffff' : 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: quickInheritMode ? '#009668' : '#45464d', boxShadow: quickInheritMode ? '0 1px 3px rgba(0,0,0,0.12)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                            >
+                              <span className="material-symbols-outlined" style={{ fontSize: 13 }}>link</span>
+                              Kế thừa từ Template cha
+                            </button>
                           </div>
+                        )}
+
+                        {quickInheritMode ? (
                           <div className="lx-form-group">
-                            <label className="lx-label">Kiểu dữ liệu</label>
-                            <select className="lx-select" value={quickType} onChange={(e) => setQuickType(e.target.value)}>
-                              <option value="text">Chữ (Text)</option>
-                              <option value="date">Ngày (Date)</option>
-                              <option value="number">Số (Number)</option>
-                              <option value="boolean">Đúng/Sai</option>
+                            <label className="lx-label">Chọn trường từ template cha</label>
+                            <select
+                              className="lx-select"
+                              value={quickParentFieldKey}
+                              onChange={(e) => setQuickParentFieldKey(e.target.value)}
+                            >
+                              <option value="">-- Chọn trường --</option>
+                              {parentTabFields.filter(f => f.field_type !== 'label').map(f => {
+                                const inheritCount = fields.filter(cf => cf.parent_field_key === f.key_name).length;
+                                return (
+                                  <option key={f.key_name} value={f.key_name}>
+                                    {f.label} ({f.key_name}){inheritCount > 0 ? ` — đã kế thừa ${inheritCount} lần` : ''}
+                                  </option>
+                                );
+                              })}
                             </select>
+                            <div style={{ fontSize: 11, color: '#76777d', marginTop: 4 }}>
+                              Trường kế thừa sẽ tự động điền giá trị từ template cha khi người dùng nhập.
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <>
+                            <div className="lx-form-group">
+                              <label className="lx-label">Mã biến (không dấu/khoảng trắng)</label>
+                              <input
+                                type="text"
+                                required={!quickInheritMode}
+                                value={quickKey}
+                                onChange={(e) => setQuickKey(e.target.value)}
+                                placeholder="vd: ho_ten_chu_dat"
+                                className="lx-input"
+                              />
+                            </div>
+                            <div className="lx-form-row">
+                              <div className="lx-form-group">
+                                <label className="lx-label">Nhãn hiển thị</label>
+                                <input
+                                  type="text"
+                                  required={!quickInheritMode}
+                                  value={quickLabel}
+                                  onChange={(e) => setQuickLabel(e.target.value)}
+                                  placeholder="vd: Họ tên chủ đất"
+                                  className="lx-input"
+                                />
+                              </div>
+                              <div className="lx-form-group">
+                                <label className="lx-label">Kiểu dữ liệu</label>
+                                <select className="lx-select" value={quickType} onChange={(e) => setQuickType(e.target.value)}>
+                                  <option value="text">Chữ (Text)</option>
+                                  <option value="date">Ngày (Date)</option>
+                                  <option value="number">Số (Number)</option>
+                                  <option value="boolean">Đúng/Sai</option>
+                                </select>
+                              </div>
+                            </div>
+                          </>
+                        )}
                         <button type="submit" className="lx-btn lx-btn-primary lx-btn-sm" style={{ width: '100%' }}>
-                          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add</span>
-                          Tạo biến động
+                          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>{quickInheritMode ? 'link' : 'add'}</span>
+                          {quickInheritMode ? 'Kế thừa trường này' : 'Tạo biến động'}
                         </button>
                       </form>
                     </div>
@@ -1649,6 +1904,49 @@ export default function AdminView() {
                     )}
                   </div>
 
+                  {/* Section label add */}
+                  <div>
+                    {!showLabelAdd ? (
+                      <button
+                        type="button"
+                        className="lx-btn lx-btn-secondary"
+                        style={{ width: '100%', borderStyle: 'dashed', borderColor: '#3b5bdb', color: '#3b5bdb' }}
+                        onClick={() => { setShowLabelAdd(true); setShowManualAdd(false); setQuickKey(''); setQuickLabel(''); setLabelTitle(''); }}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: 18 }}>title</span>
+                        Thêm tiêu đề nhóm
+                      </button>
+                    ) : (
+                      <div className="lx-quick-tag-box" style={{ borderColor: '#3b5bdb' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3b5bdb' }}>Thêm tiêu đề nhóm</span>
+                          <button className="lx-btn lx-btn-ghost lx-btn-sm" type="button" onClick={() => setShowLabelAdd(false)}>Đóng</button>
+                        </div>
+                        <p style={{ fontSize: 12, color: '#45464d', marginBottom: 10, lineHeight: 1.6 }}>
+                          Tạo tiêu đề phân nhóm hiển thị trong form điền — không phải biến dữ liệu, không xuất hiện trong file Word.
+                        </p>
+                        <form onSubmit={handleAddLabelField} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <div className="lx-form-group">
+                            <label className="lx-label">Nội dung tiêu đề <span style={{ color: '#ba1a1a' }}>*</span></label>
+                            <input
+                              type="text"
+                              required
+                              value={labelTitle}
+                              onChange={(e) => setLabelTitle(e.target.value)}
+                              placeholder="vd: BÊN A — Bên Chuyển Nhượng (Bán)"
+                              className="lx-input"
+                              autoFocus
+                            />
+                          </div>
+                          <button type="submit" className="lx-btn lx-btn-primary lx-btn-sm" style={{ width: '100%' }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add</span>
+                            Tạo tiêu đề nhóm
+                          </button>
+                        </form>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Field list */}
                   {fields.length === 0 ? (
                     <div className="lx-empty">
@@ -1656,20 +1954,83 @@ export default function AdminView() {
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {fields.map((field, idx) => (
-                        <div id={`field-config-${field.key_name}`} key={field.id} className="lx-field-card">
+                      {fields.map((field, idx) => {
+                        const isDragging = draggedIdx === idx;
+                        const isDropTarget = dragOverIdx === idx && draggedIdx !== idx;
+                        const commonDragProps = {
+                          draggable: true,
+                          onDragStart: () => setDraggedIdx(idx),
+                          onDragOver: (e) => { e.preventDefault(); setDragOverIdx(idx); },
+                          onDrop: () => {
+                            if (draggedIdx === null || draggedIdx === idx) return;
+                            const arr = [...fields];
+                            const [moved] = arr.splice(draggedIdx, 1);
+                            arr.splice(idx, 0, moved);
+                            updateFieldsAndHistory(arr.map((f, i) => ({ ...f, order_index: i })));
+                            setDraggedIdx(null); setDragOverIdx(null);
+                          },
+                          onDragEnd: () => { setDraggedIdx(null); setDragOverIdx(null); }
+                        };
+
+                        if (field.field_type === 'label') {
+                          return (
+                            <div key={field.id} {...commonDragProps} style={{ background: '#1e3a5f', borderRadius: 6, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, opacity: isDragging ? 0.4 : 1, borderTop: isDropTarget ? '2px solid #fbbf24' : undefined, cursor: 'grab' }}>
+                              <span className="material-symbols-outlined" style={{ color: '#4a6a90', fontSize: 16, flexShrink: 0, cursor: 'grab' }}>drag_indicator</span>
+                              <span className="material-symbols-outlined" style={{ color: '#fbbf24', fontSize: 18, flexShrink: 0 }}>title</span>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ color: '#94a3b8', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 3 }}>Tiêu đề nhóm</div>
+                                <input
+                                  type="text"
+                                  value={field.label}
+                                  onChange={(e) => handleFieldChange(idx, 'label', e.target.value)}
+                                  onDragStart={(e) => e.stopPropagation()}
+                                  style={{ background: 'transparent', border: '1px solid #2d4a6e', borderRadius: 4, padding: '4px 8px', color: '#ffffff', fontSize: 13, fontWeight: 600, width: '100%', outline: 'none' }}
+                                  onFocus={e => { e.target.style.borderColor = '#fbbf24'; }}
+                                  onBlur={e => { e.target.style.borderColor = '#2d4a6e'; }}
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                title="Xóa tiêu đề"
+                                onClick={() => updateFieldsAndHistory(fields.filter((_, i) => i !== idx))}
+                                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center' }}
+                              >
+                                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
+                              </button>
+                            </div>
+                          );
+                        }
+                        return (
+                        <div id={`field-config-${field.key_name}`} key={field.id} className="lx-field-card" {...commonDragProps}
+                          style={{ opacity: isDragging ? 0.4 : 1, borderTop: isDropTarget ? '2px solid #3b5bdb' : undefined, cursor: 'default' }}
+                        >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                            <span className="lx-field-key">{`{{${field.key_name}}}`}</span>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#45464d', cursor: 'pointer' }}>
-                              <input
-                                type="checkbox"
-                                id={`req-${field.id}`}
-                                checked={!!field.is_required}
-                                onChange={(e) => handleFieldChange(idx, 'is_required', e.target.checked)}
-                                style={{ accentColor: '#000000', cursor: 'pointer' }}
-                              />
-                              Bắt buộc
-                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                              <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#c6c6cd', cursor: 'grab', flexShrink: 0 }}>drag_indicator</span>
+                              <span className="lx-field-key" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`{{${field.key_name}}}`}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#45464d', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  id={`req-${field.id}`}
+                                  checked={!!field.is_required}
+                                  onChange={(e) => handleFieldChange(idx, 'is_required', e.target.checked)}
+                                  style={{ accentColor: '#000000', cursor: 'pointer' }}
+                                />
+                                Bắt buộc
+                              </label>
+                              <button
+                                type="button"
+                                title="Xóa trường"
+                                onClick={() => updateFieldsAndHistory(fields.filter((_, i) => i !== idx))}
+                                style={{ background: 'transparent', border: 'none', color: '#c6c6cd', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}
+                                onMouseEnter={e => e.currentTarget.style.color = '#ba1a1a'}
+                                onMouseLeave={e => e.currentTarget.style.color = '#c6c6cd'}
+                              >
+                                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>delete</span>
+                              </button>
+                            </div>
                           </div>
                           <div className="lx-form-row">
                             <div className="lx-form-group">
@@ -1735,7 +2096,8 @@ export default function AdminView() {
                             );
                           })()}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1752,8 +2114,8 @@ export default function AdminView() {
                 {/* Right panel: docx preview */}
                 <div style={{ width: isMobile ? '100%' : `${100 - leftWidth}%`, display: 'flex', flexDirection: 'column', flex: 1 }}>
                   <DocxPreview
-                    fileUrl={`${API_BASE}/templates/${selectedTemplate.id}/download-original`}
-                    title={`${selectedTemplate.name} (Bản xem trước để chọn text)`}
+                    fileUrl={`${API_BASE}/templates/${activeConfigTab ? activeConfigTab.id : selectedTemplate.id}/download-original`}
+                    title={`${activeConfigTab ? activeConfigTab.name : selectedTemplate.name} (Bản xem trước để chọn text)`}
                     liveData={{}}
                     fields={fields}
                     highlightField={null}
@@ -1828,10 +2190,10 @@ export default function AdminView() {
                     <span style={{ fontSize: 13, fontWeight: 600, color: '#45464d' }}>
                       {uploadFile ? uploadFile.name : 'Nhấn để chọn file Word'}
                     </span>
-                    <span style={{ fontSize: 11, color: '#76777d', marginTop: 2 }}>Định dạng: .docx</span>
+                    <span style={{ fontSize: 11, color: '#76777d', marginTop: 2 }}>Định dạng: .doc, .docx</span>
                     <input
                       type="file"
-                      accept=".docx"
+                      accept=".doc,.docx"
                       required
                       style={{ display: 'none' }}
                       onChange={(e) => setUploadFile(e.target.files[0])}
@@ -1944,6 +2306,7 @@ export default function AdminView() {
                 {(() => {
                   const filteredAvailable = templates.filter(t => {
                     if (t.id === linkingTemplate.id) return false;
+                    if (t.status !== 'active') return false;
                     if (t.parent_template_id) return false;
                     if (linkedChildren.some(linked => linked.id === t.id)) return false;
                     if (linkSearch.trim()) {

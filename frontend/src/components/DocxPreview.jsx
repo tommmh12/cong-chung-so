@@ -156,19 +156,20 @@ export function DocxPreviewInModal({ fileUrl, liveData, fields }) {
   const [error, setError] = useState(null);
   const originalHtmlRef = useRef('');
   const prevPropsRef = useRef('');
+  const liveDataRef = useRef(liveData);
+  const fieldsRef = useRef(fields);
+  useEffect(() => { liveDataRef.current = liveData; }, [liveData]);
+  useEffect(() => { fieldsRef.current = fields; }, [fields]);
 
   const applyLiveData = (data, fieldsList) => {
     if (!originalHtmlRef.current || !containerRef.current) return;
-    
-    // Save current parameters in ref to avoid redundant DOM refreshes
+
     prevPropsRef.current = JSON.stringify({ fields: fieldsList, liveData: data });
-    
-    // First, restore the clean original HTML structure
+
     containerRef.current.innerHTML = originalHtmlRef.current;
-    
-    // Find all paragraphs, headings, list items, table cells
+
     const elements = containerRef.current.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td');
-    
+
     elements.forEach(el => {
       replacePlaceholdersInElement(el, fieldsList, data, true);
     });
@@ -187,7 +188,7 @@ export function DocxPreviewInModal({ fileUrl, liveData, fields }) {
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error("Không thể tải file mẫu.");
         const blob = await response.blob();
-        
+
         if (isMounted && containerRef.current) {
           containerRef.current.innerHTML = "";
           await docx.renderAsync(blob, containerRef.current, null, {
@@ -197,10 +198,12 @@ export function DocxPreviewInModal({ fileUrl, liveData, fields }) {
             ignoreHeight: true,
             debug: false
           });
-          
+
           originalHtmlRef.current = containerRef.current.innerHTML;
-          if (fields && fields.length > 0) {
-            applyLiveData(liveData || {}, fields);
+          const latestFields = fieldsRef.current;
+          const latestLiveData = liveDataRef.current;
+          if (latestFields && latestFields.length > 0) {
+            applyLiveData(latestLiveData || {}, latestFields);
           }
         }
       } catch (err) {
@@ -306,19 +309,24 @@ export function DocxPreview({ fileUrl, title, liveData, fields, onTableRowClick,
   const [error, setError] = useState(null);
   const originalHtmlRef = useRef('');
   const prevPropsRef = useRef('');
+  // Always keep refs pointing to latest props so async loadDocx uses current values
+  const liveDataRef = useRef(liveData);
+  const fieldsRef = useRef(fields);
+  useEffect(() => { liveDataRef.current = liveData; }, [liveData]);
+  useEffect(() => { fieldsRef.current = fields; }, [fields]);
 
   const applyLiveData = (data, fieldsList) => {
     if (!originalHtmlRef.current || !containerRef.current) return;
-    
+
     // Save current parameters in ref to avoid redundant DOM refreshes
     prevPropsRef.current = JSON.stringify({ fields: fieldsList, liveData: data });
-    
+
     // First, restore the clean original HTML structure
     containerRef.current.innerHTML = originalHtmlRef.current;
-    
+
     // Find all paragraphs, headings, list items, table cells
     const elements = containerRef.current.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td');
-    
+
     elements.forEach(el => {
       replacePlaceholdersInElement(el, fieldsList, data, false);
     });
@@ -337,7 +345,7 @@ export function DocxPreview({ fileUrl, title, liveData, fields, onTableRowClick,
         const response = await fetch(fileUrl);
         if (!response.ok) throw new Error("Không thể tải file tài liệu để xem trước.");
         const blob = await response.blob();
-        
+
         if (isMounted && containerRef.current) {
           containerRef.current.innerHTML = "";
           await docx.renderAsync(blob, containerRef.current, null, {
@@ -347,10 +355,13 @@ export function DocxPreview({ fileUrl, title, liveData, fields, onTableRowClick,
             ignoreHeight: true,
             debug: false
           });
-          
+
           originalHtmlRef.current = containerRef.current.innerHTML;
-          if (fields && fields.length > 0) {
-            applyLiveData(liveData || {}, fields);
+          // Use refs to get latest liveData/fields regardless of when DOCX finishes loading
+          const latestFields = fieldsRef.current;
+          const latestLiveData = liveDataRef.current;
+          if (latestFields && latestFields.length > 0) {
+            applyLiveData(latestLiveData || {}, latestFields);
           }
         }
       } catch (err) {

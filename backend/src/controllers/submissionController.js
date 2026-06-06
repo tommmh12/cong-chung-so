@@ -144,14 +144,16 @@ async function createSubmission(req, res) {
     }
     const template = templates[0];
 
-    // Lấy danh sách các child templates liên kết
+    // Chỉ xử lý child templates đang active
     let [childTemplates] = await pool.query(
       'SELECT * FROM templates WHERE parent_template_id = ? AND status = \'active\'',
       [templateId]
     );
 
-    if (Array.isArray(selectedChildIds)) {
+    if (selectedChildIds && selectedChildIds.length > 0) {
       childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
+    } else {
+      childTemplates = [];
     }
 
     const submissionId = uuidv4();
@@ -273,14 +275,16 @@ async function getSubmissions(req, res) {
         console.warn('Lỗi parse values_json:', e);
       }
 
-      // Query child templates associated with this parent template
+      // Chỉ hiện child templates đang active trong danh sách hồ sơ
       let [childTemplates] = await pool.query(
         'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
         [row.template_id]
       );
 
-      if (Array.isArray(selectedChildIds)) {
+      if (selectedChildIds.length > 0) {
         childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
+      } else {
+        childTemplates = [];
       }
 
       const fileNames = [`${row.template_name}.docx`];
@@ -322,7 +326,7 @@ async function downloadSubmission(req, res) {
   try {
     const submissionId = req.params.id;
     const [rows] = await pool.query(
-      'SELECT s.values_json, t.name as template_name, t.id as template_id, t.file_path FROM document_submissions s JOIN templates t ON s.template_id = t.id WHERE s.id = ?',
+      'SELECT s.values_json, t.name as template_name, t.id as template_id, t.storage_key FROM document_submissions s JOIN templates t ON s.template_id = t.id WHERE s.id = ?',
       [submissionId]
     );
 
@@ -330,15 +334,17 @@ async function downloadSubmission(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    const parsedVJ = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
+    const values = parsedVJ.values || {};
+    const selectedChildIds = parsedVJ.selectedChildIds || [];
     const parentTemplate = rows[0];
 
-    // Lấy child templates liên kết
+    // Chỉ tải child templates đang active
     let [childTemplates] = await pool.query(
-      'SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
       [parentTemplate.template_id]
     );
-    if (Array.isArray(selectedChildIds)) {
+    if (selectedChildIds.length > 0) {
       childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
     }
 
@@ -369,7 +375,7 @@ async function downloadSubmission(req, res) {
       [parentTemplate.template_id]
     );
     const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.file_path.replace(/\\/g, '/'));
+    const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.storage_key.replace(/\\/g, '/'));
 
     const masterBuffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
     const safeName = parentTemplate.template_name.replace(/[^a-zA-Z0-9À-ỹ\s-_]/g, '');
@@ -399,13 +405,13 @@ async function downloadSubmission(req, res) {
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
           const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
-          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.file_path.replace(/\\/g, '/'));
+          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
           const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
           archive.append(childBuffer, { name: `${child.name}_Căn_${rIdx + 1}.docx` });
         }
       } else {
         const prep = prepareValuesForTemplate(childFields, values, child.name);
-        const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.file_path.replace(/\\/g, '/'));
+        const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
         const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
         archive.append(childBuffer, { name: `${child.name}.docx` });
       }
@@ -431,7 +437,9 @@ async function getSubmissionFiles(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    const parsedVJ2 = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
+    const values = parsedVJ2.values || {};
+    const selectedChildIds = parsedVJ2.selectedChildIds || [];
     const parentName = rows[0].template_name;
 
     let [childTemplates] = await pool.query(
@@ -439,8 +447,10 @@ async function getSubmissionFiles(req, res) {
       [rows[0].template_id]
     );
 
-    if (Array.isArray(selectedChildIds)) {
+    if (selectedChildIds.length > 0) {
       childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
+    } else {
+      childTemplates = [];
     }
 
     if (childTemplates.length === 0) {
@@ -471,13 +481,13 @@ async function getSubmissionFiles(req, res) {
 async function downloadSubmissionFile(req, res) {
   try {
     const submissionId = req.params.id;
-    const filename = req.query.filename;
+    const filename = (req.query.filename || '').normalize('NFC');
     if (!filename) {
       return res.status(400).json({ error: 'Thiếu tên file cần tải.' });
     }
 
     const [rows] = await pool.query(
-      'SELECT s.values_json, t.name as template_name, t.id as template_id, t.file_path FROM document_submissions s JOIN templates t ON s.template_id = t.id WHERE s.id = ?',
+      'SELECT s.values_json, t.name as template_name, t.id as template_id, t.storage_key FROM document_submissions s JOIN templates t ON s.template_id = t.id WHERE s.id = ?',
       [submissionId]
     );
 
@@ -485,16 +495,18 @@ async function downloadSubmissionFile(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy hồ sơ.' });
     }
 
-    const { values, selectedChildIds } = rows[0].values_json;
+    const parsed = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
+    const values = parsed.values || {};
+    const selectedChildIds = parsed.selectedChildIds || [];
     const parentTemplate = rows[0];
 
     // 1. Kiểm tra nếu file yêu cầu chính là file master mẹ
-    if (filename === `${parentTemplate.template_name}.docx`) {
+    if (filename === `${parentTemplate.template_name}.docx`.normalize('NFC')) {
       let [childTemplatesForSuffix] = await pool.query(
-        'SELECT id, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+        'SELECT id, is_repeated FROM templates WHERE parent_template_id = ?',
         [parentTemplate.template_id]
       );
-      if (Array.isArray(selectedChildIds)) {
+      if (selectedChildIds.length > 0) {
         childTemplatesForSuffix = childTemplatesForSuffix.filter(t => selectedChildIds.includes(t.id));
       }
       for (const child of childTemplatesForSuffix) {
@@ -523,7 +535,7 @@ async function downloadSubmissionFile(req, res) {
         [parentTemplate.template_id]
       );
       const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
-      const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.file_path.replace(/\\/g, '/'));
+      const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.storage_key.replace(/\\/g, '/'));
       const buffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
 
       res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
@@ -531,12 +543,12 @@ async function downloadSubmissionFile(req, res) {
       return res.send(buffer);
     }
 
-    // 2. Kiểm tra các file con
+    // 2. Kiểm tra các file con (chỉ active)
     let [childTemplates] = await pool.query(
-      'SELECT id, name, file_path, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
       [parentTemplate.template_id]
     );
-    if (Array.isArray(selectedChildIds)) {
+    if (selectedChildIds.length > 0) {
       childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
     }
 
@@ -545,13 +557,13 @@ async function downloadSubmissionFile(req, res) {
         const recordsList = values[child.id];
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
-          if (filename === `${child.name}_Căn_${rIdx + 1}.docx`) {
+          if (filename === `${child.name}_Căn_${rIdx + 1}.docx`.normalize('NFC')) {
             const [childFields] = await pool.query(
               'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
               [child.id]
             );
             const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
-            const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.file_path.replace(/\\/g, '/'));
+            const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
             const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
 
             res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
@@ -560,13 +572,13 @@ async function downloadSubmissionFile(req, res) {
           }
         }
       } else {
-        if (filename === `${child.name}.docx`) {
+        if (filename === `${child.name}.docx`.normalize('NFC')) {
           const [childFields] = await pool.query(
             'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
             [child.id]
           );
           const prep = prepareValuesForTemplate(childFields, values, child.name);
-          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.file_path.replace(/\\/g, '/'));
+          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
           const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
 
           res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);

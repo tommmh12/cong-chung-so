@@ -106,7 +106,7 @@ async function createTemplateFromUploadedFile(file, options = {}) {
       await conn.beginTransaction();
 
       await conn.query(
-        'INSERT INTO templates (id, office_id, category_id, name, file_path, status) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO templates (id, office_id, category_id, name, storage_key, status) VALUES (?, ?, ?, ?, ?, ?)',
         [templateId, officeId, categoryId, templateName, relativeFilePath, 'draft']
       );
 
@@ -152,7 +152,7 @@ async function createTemplateFromUploadedFile(file, options = {}) {
 async function getTemplates(req, res) {
   try {
     const [rows] = await pool.query(`
-      SELECT t.id, t.name, t.file_path, t.status, t.created_at, t.parent_template_id, t.is_repeated,
+      SELECT t.id, t.name, t.storage_key, t.status, t.created_at, t.parent_template_id, t.is_repeated,
              t.category_id, c.name AS category_name, c.parent_id AS category_parent_id,
              (SELECT COUNT(*) FROM template_fields WHERE template_id = t.id) as fields_count,
              (SELECT COUNT(*) FROM templates WHERE parent_template_id = t.id) as children_count
@@ -266,7 +266,7 @@ async function getTemplateTables(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu.' });
     }
     const template = templates[0];
-    const absolutePath = path.join(__dirname, '..', '..', template.file_path.replace(/\\/g, '/'));
+    const absolutePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
     const tables = scanTables(absolutePath);
     const tablesWithSuggestions = tables.map(tbl => {
       const suggestedFields = tbl.headers.map((header, colIdx) => {
@@ -297,7 +297,7 @@ async function injectTemplateTable(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu.' });
     }
     const template = templates[0];
-    const absolutePath = path.join(__dirname, '..', '..', template.file_path.replace(/\\/g, '/'));
+    const absolutePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
     const tables = scanTables(absolutePath);
     const targetTable = tables.find(t => t.tableIndex === tableIndex);
     if (!targetTable) {
@@ -352,7 +352,7 @@ async function updateTemplateFields(req, res) {
       return res.status(404).json({ error: 'Biểu mẫu không tồn tại trên hệ thống.' });
     }
     const template = templates[0];
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.file_path.replace(/\\/g, '/'));
+    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
 
     const replacements = fields
       .filter(f => f.replace_text && typeof f.replace_text === 'string' && f.replace_text.trim() !== '')
@@ -408,8 +408,15 @@ async function updateTemplateFields(req, res) {
       conn.release();
     }
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Đã xảy ra lỗi khi lưu cấu hình form.' });
+    console.error('updateTemplateFields error:', error);
+    const msg = error.message || '';
+    if (msg.includes('too long') || msg.includes('value too long') || msg.includes('Data too long')) {
+      return res.status(400).json({ error: 'Một trường có dữ liệu quá dài. Vui lòng rút ngắn nhãn hiển thị hoặc chọn đoạn văn ngắn hơn khi tạo biến.' });
+    }
+    if (msg.includes('duplicate') || msg.includes('Duplicate') || msg.includes('unique') || msg.includes('UNIQUE')) {
+      return res.status(400).json({ error: 'Có hai trường trùng mã biến (key_name). Vui lòng kiểm tra lại danh sách field.' });
+    }
+    res.status(500).json({ error: 'Đã xảy ra lỗi khi lưu cấu hình form: ' + msg });
   }
 }
 
@@ -417,7 +424,7 @@ async function getTemplateLinks(req, res) {
   try {
     const { id } = req.params;
     const [rows] = await pool.query(
-      'SELECT id, name, file_path, status, created_at, is_repeated FROM templates WHERE parent_template_id = ?',
+      'SELECT id, name, storage_key, status, created_at, is_repeated FROM templates WHERE parent_template_id = ?',
       [id]
     );
     res.json(rows);
@@ -553,13 +560,13 @@ async function restoreTemplateField(req, res) {
       return res.json({ message: `Đã xóa cấu hình biến thủ công {{${key_name}}} thành công!` });
     }
 
-    const [templates] = await pool.query('SELECT file_path FROM templates WHERE id = ?', [templateId]);
+    const [templates] = await pool.query('SELECT storage_key FROM templates WHERE id = ?', [templateId]);
     if (templates.length === 0) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu tương ứng.' });
     }
 
     const template = templates[0];
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.file_path.replace(/\\/g, '/'));
+    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
 
     try {
       const content = fs.readFileSync(absoluteTemplatePath, "binary");
@@ -597,13 +604,13 @@ async function restoreTemplateField(req, res) {
 async function downloadOriginalTemplate(req, res) {
   try {
     const templateId = req.params.id;
-    const [rows] = await pool.query('SELECT file_path, name FROM templates WHERE id = ?', [templateId]);
+    const [rows] = await pool.query('SELECT storage_key, name FROM templates WHERE id = ?', [templateId]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Không tìm thấy file mẫu.' });
     }
 
-    const absolutePath = path.join(__dirname, '..', '..', rows[0].file_path.replace(/\\/g, '/'));
+    const absolutePath = path.join(__dirname, '..', '..', rows[0].storage_key.replace(/\\/g, '/'));
     if (!fs.existsSync(absolutePath)) {
       return res.status(404).json({ error: 'File mẫu gốc không tồn tại trên hệ thống.' });
     }
@@ -618,7 +625,7 @@ async function downloadOriginalTemplate(req, res) {
 async function deleteTemplate(req, res) {
   try {
     const templateId = req.params.id;
-    const [templates] = await pool.query('SELECT file_path FROM templates WHERE id = ?', [templateId]);
+    const [templates] = await pool.query('SELECT storage_key FROM templates WHERE id = ?', [templateId]);
     if (templates.length === 0) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu cần xóa.' });
     }
@@ -631,7 +638,7 @@ async function deleteTemplate(req, res) {
 
     await pool.query('DELETE FROM templates WHERE id = ?', [templateId]);
 
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.file_path.replace(/\\/g, '/'));
+    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
     if (fs.existsSync(absoluteTemplatePath)) {
       try {
         fs.unlinkSync(absoluteTemplatePath);
@@ -762,11 +769,11 @@ async function duplicateTemplate(req, res) {
     const originalTemplate = templates[0];
     const newTemplateId = uuidv4();
     
-    const ext = path.extname(originalTemplate.file_path.replace(/\\/g, '/')) || '.docx';
+    const ext = path.extname(originalTemplate.storage_key.replace(/\\/g, '/')) || '.docx';
     const newFileName = `${newTemplateId}${ext}`;
-    const templatesDir = path.dirname(path.join(__dirname, '..', '..', originalTemplate.file_path.replace(/\\/g, '/')));
+    const templatesDir = path.dirname(path.join(__dirname, '..', '..', originalTemplate.storage_key.replace(/\\/g, '/')));
     const newFilePath = path.join(templatesDir, newFileName);
-    const absoluteOriginalPath = path.join(__dirname, '..', '..', originalTemplate.file_path.replace(/\\/g, '/'));
+    const absoluteOriginalPath = path.join(__dirname, '..', '..', originalTemplate.storage_key.replace(/\\/g, '/'));
 
     if (fs.existsSync(absoluteOriginalPath)) {
       fs.copyFileSync(absoluteOriginalPath, newFilePath);
@@ -780,7 +787,7 @@ async function duplicateTemplate(req, res) {
 
     const newName = `[Sao chép] ${originalTemplate.name}`;
     await conn.query(
-      'INSERT INTO templates (id, office_id, category_id, name, file_path, status, parent_template_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO templates (id, office_id, category_id, name, storage_key, status, parent_template_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [newTemplateId, originalTemplate.office_id, originalTemplate.category_id || null, newName, relativeNewFilePath, 'draft', null]
     );
 

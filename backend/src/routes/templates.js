@@ -43,7 +43,7 @@ const upload = multer({
   storage: storage,
   limits: {
     files: 10,
-    fileSize: 1 * 1024 * 1024
+    fileSize: 20 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
     const normalizedName = normalizeVietnameseFileName(file.originalname);

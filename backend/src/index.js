@@ -177,6 +177,12 @@ async function migrateDatabase() {
       )
     `);
 
+    // Ensure replace_text and label columns are large enough (idempotent on re-run)
+    try {
+      await pool.query(`ALTER TABLE template_fields ALTER COLUMN replace_text TYPE TEXT`);
+      await pool.query(`ALTER TABLE template_fields ALTER COLUMN label TYPE VARCHAR(500)`);
+    } catch (_) { /* columns already altered */ }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS document_submissions (
         id CHAR(36) PRIMARY KEY,

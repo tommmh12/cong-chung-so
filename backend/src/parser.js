@@ -62,6 +62,9 @@ function scanPlaceholders(filePath) {
     return Array.from(variables);
   } catch (error) {
     console.error("Lỗi khi quét file DOCX:", error);
+    if (error.message && error.message.includes('filetype for this file could not be identified')) {
+      throw new Error('File không phải là tài liệu Word (.docx) hợp lệ. Vui lòng kiểm tra lại file — có thể là file theme (.thmx), file hỏng, hoặc file không phải định dạng Word.');
+    }
     throw new Error("Không thể đọc và phân tích file Word. Vui lòng kiểm tra định dạng file.");
   }
 }

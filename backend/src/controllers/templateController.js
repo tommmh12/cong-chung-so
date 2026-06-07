@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
+const archiver = require('archiver');
 const PizZip = require('pizzip');
 const { pool } = require('../db');
 const {
@@ -158,6 +159,7 @@ async function getTemplates(req, res) {
              (SELECT COUNT(*) FROM templates WHERE parent_template_id = t.id) as children_count
       FROM templates t
       LEFT JOIN template_categories c ON c.id = t.category_id
+      WHERE t.parent_template_id IS NULL
       ORDER BY t.created_at DESC
     `);
     res.json(rows);
@@ -248,7 +250,7 @@ async function getTemplateForm(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu yêu cầu.' });
     }
     const [fields] = await pool.query(
-      'SELECT id, key_name, field_type, label, is_required, order_index, replace_text, paragraph_context, parent_field_key FROM template_fields WHERE template_id = ? ORDER BY order_index ASC',
+      'SELECT id, key_name, field_type, label, is_required, order_index, replace_text, paragraph_context, parent_field_key, occurrence_index FROM template_fields WHERE template_id = ? ORDER BY order_index ASC',
       [templateId]
     );
     res.json({ template: templates[0], fields });
@@ -359,7 +361,8 @@ async function updateTemplateFields(req, res) {
       .map(f => ({
         searchText: f.replace_text.trim(),
         key_name: f.key_name,
-        paragraph_context: f.paragraph_context
+        paragraph_context: f.paragraph_context,
+        occurrence_index: f.occurrence_index ?? 0
       }));
 
     if (replacements.length > 0) {
@@ -380,8 +383,8 @@ async function updateTemplateFields(req, res) {
       for (const field of fields) {
         const fieldId = (field.id && !field.id.startsWith('temp-')) ? field.id : uuidv4();
         await conn.query(
-          `INSERT INTO template_fields (id, template_id, key_name, field_type, label, is_required, order_index, replace_text, paragraph_context, parent_field_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO template_fields (id, template_id, key_name, field_type, label, is_required, order_index, replace_text, paragraph_context, parent_field_key, occurrence_index)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             fieldId,
             templateId,
@@ -392,7 +395,8 @@ async function updateTemplateFields(req, res) {
             field.order_index,
             field.replace_text || null,
             field.paragraph_context || null,
-            field.parent_field_key || null
+            field.parent_field_key || null,
+            field.occurrence_index ?? 0
           ]
         );
       }
@@ -631,10 +635,25 @@ async function deleteTemplate(req, res) {
     }
     const template = templates[0];
 
+    // Collect children before deleting (ON DELETE SET NULL would orphan them)
+    const [children] = await pool.query(
+      'SELECT id, storage_key FROM templates WHERE parent_template_id = ?',
+      [templateId]
+    );
+
     const [submissions] = await pool.query(
       'SELECT output_file_path FROM document_submissions WHERE template_id = ?',
       [templateId]
     );
+
+    // Delete children first (their own fields/submissions cascade via FK)
+    for (const child of children) {
+      await pool.query('DELETE FROM templates WHERE id = ?', [child.id]);
+      const childPath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
+      if (fs.existsSync(childPath)) {
+        try { fs.unlinkSync(childPath); } catch (_) {}
+      }
+    }
 
     await pool.query('DELETE FROM templates WHERE id = ?', [templateId]);
 
@@ -901,6 +920,123 @@ async function importTemplateFields(req, res) {
   }
 }
 
+async function uploadChildTemplates(req, res) {
+  const { id: parentId } = req.params;
+  try {
+    const [parentRows] = await pool.query('SELECT id, name FROM templates WHERE id = ?', [parentId]);
+    if (!parentRows.length) return res.status(404).json({ error: 'Template cha không tồn tại' });
+
+    const files = [...(req.files?.templateFile || []), ...(req.files?.templateFiles || [])];
+    if (!files.length) return res.status(400).json({ error: 'Không có file nào được tải lên' });
+
+    const inserted = [];
+    const failed = [];
+    for (const file of files) {
+      const normalizedOriginal = normalizeVietnameseFileName(file.originalname);
+      const baseName = path.basename(normalizedOriginal, path.extname(normalizedOriginal));
+      try {
+        const templatesDir = path.dirname(file.path);
+        const id = uuidv4();
+        let sourceDocxPath = file.path;
+        let cleanupConverted = () => {};
+
+        // Convert .doc → .docx if needed
+        const ext = path.extname(file.path).toLowerCase();
+        if (ext === '.doc') {
+          const conversion = await ensureDocxForTemplate(file.path, { templateId: id, outputDir: templatesDir });
+          sourceDocxPath = conversion.outputPath;
+          cleanupConverted = conversion.cleanup;
+          cleanupFileIfExists(file.path);
+        }
+
+        const finalDocxPath = path.join(templatesDir, `${id}.docx`);
+        fs.renameSync(sourceDocxPath, finalDocxPath);
+        cleanupConverted();
+        const storageKey = path.relative(path.join(__dirname, '..', '..'), finalDocxPath).replace(/\\/g, '/');
+
+        // Scan placeholders like the main upload does
+        const variables = scanPlaceholders(finalDocxPath);
+
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          await conn.query(
+            `INSERT INTO templates (id, office_id, name, storage_key, status, parent_template_id) VALUES (?, ?, ?, ?, 'active', ?)`,
+            [id, DEFAULT_OFFICE_ID, baseName, storageKey, parentId]
+          );
+          for (let i = 0; i < variables.length; i++) {
+            const key = variables[i];
+            const defaultLabel = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            await conn.query(
+              `INSERT INTO template_fields (id, template_id, key_name, field_type, label, is_required, order_index) VALUES (?, ?, ?, 'text', ?, true, ?)`,
+              [uuidv4(), id, key, defaultLabel, i]
+            );
+          }
+          await conn.commit();
+        } catch (dbErr) {
+          await conn.rollback();
+          cleanupFileIfExists(finalDocxPath);
+          throw dbErr;
+        } finally {
+          conn.release();
+        }
+
+        inserted.push({ id, name: baseName, status: 'draft', is_repeated: false, variablesCount: variables.length });
+      } catch (err) {
+        cleanupFileIfExists(file.path);
+        failed.push({ name: baseName, error: err.message });
+      }
+    }
+    res.json({
+      message: `Đã thêm ${inserted.length} phụ lục${failed.length ? `, ${failed.length} lỗi` : ''}`,
+      templates: inserted,
+      failed
+    });
+  } catch (error) {
+    console.error('uploadChildTemplates:', error);
+    res.status(500).json({ error: 'Không thể thêm phụ lục: ' + error.message });
+  }
+}
+
+async function downloadAllAsZip(req, res) {
+  const { id } = req.params;
+  try {
+    const [parentRows] = await pool.query('SELECT * FROM templates WHERE id = ?', [id]);
+    if (!parentRows.length) return res.status(404).json({ error: 'Template không tồn tại' });
+    const parent = parentRows[0];
+
+    const [children] = await pool.query(
+      'SELECT * FROM templates WHERE parent_template_id = ?', [id]
+    );
+
+    const all = [parent, ...children];
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(parent.name)}.zip`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', err => { console.error(err); res.status(500).end(); });
+    archive.pipe(res);
+
+    const usedNames = {};
+    for (const tmpl of all) {
+      const absPath = path.join(__dirname, '..', '..', tmpl.storage_key.replace(/^\//, ''));
+      if (fs.existsSync(absPath)) {
+        const ext = path.extname(absPath) || '.docx';
+        let fileName = `${tmpl.name}${ext}`;
+        if (usedNames[fileName]) { usedNames[fileName]++; fileName = `${tmpl.name}_${usedNames[fileName]}${ext}`; }
+        else usedNames[fileName] = 1;
+        archive.file(absPath, { name: fileName });
+      }
+    }
+
+    await archive.finalize();
+  } catch (error) {
+    console.error('downloadAllAsZip:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Không thể tạo file ZIP' });
+  }
+}
+
 module.exports = {
   getTemplates,
   uploadTemplates,
@@ -921,5 +1057,7 @@ module.exports = {
   toggleTemplateStatus,
   duplicateTemplate,
   exportTemplateFields,
-  importTemplateFields
+  importTemplateFields,
+  uploadChildTemplates,
+  downloadAllAsZip
 };

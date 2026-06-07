@@ -144,17 +144,11 @@ async function createSubmission(req, res) {
     }
     const template = templates[0];
 
-    // Chỉ xử lý child templates đang active
-    let [childTemplates] = await pool.query(
-      'SELECT * FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+    // Luôn include toàn bộ file con (phụ lục) — không lọc theo status hay selectedChildIds
+    const [childTemplates] = await pool.query(
+      'SELECT * FROM templates WHERE parent_template_id = ?',
       [templateId]
     );
-
-    if (selectedChildIds && selectedChildIds.length > 0) {
-      childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
-    } else {
-      childTemplates = [];
-    }
 
     const submissionId = uuidv4();
     let submissionStatus = 'completed';
@@ -266,26 +260,17 @@ async function getSubmissions(req, res) {
     const results = [];
     for (const row of rows) {
       let values = {};
-      let selectedChildIds = [];
       try {
         const parsed = typeof row.values_json === 'string' ? JSON.parse(row.values_json) : (row.values_json || {});
         values = parsed.values || {};
-        selectedChildIds = parsed.selectedChildIds || [];
       } catch (e) {
         console.warn('Lỗi parse values_json:', e);
       }
 
-      // Chỉ hiện child templates đang active trong danh sách hồ sơ
-      let [childTemplates] = await pool.query(
-        'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+      const [childTemplates] = await pool.query(
+        'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ?',
         [row.template_id]
       );
-
-      if (selectedChildIds.length > 0) {
-        childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
-      } else {
-        childTemplates = [];
-      }
 
       const fileNames = [`${row.template_name}.docx`];
       for (const child of childTemplates) {
@@ -336,17 +321,12 @@ async function downloadSubmission(req, res) {
 
     const parsedVJ = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
     const values = parsedVJ.values || {};
-    const selectedChildIds = parsedVJ.selectedChildIds || [];
     const parentTemplate = rows[0];
 
-    // Chỉ tải child templates đang active
-    let [childTemplates] = await pool.query(
-      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+    const [childTemplates] = await pool.query(
+      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ?',
       [parentTemplate.template_id]
     );
-    if (selectedChildIds.length > 0) {
-      childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
-    }
 
     // Map repeated child records to parent suffix variables
     for (const child of childTemplates) {
@@ -439,19 +419,12 @@ async function getSubmissionFiles(req, res) {
 
     const parsedVJ2 = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
     const values = parsedVJ2.values || {};
-    const selectedChildIds = parsedVJ2.selectedChildIds || [];
     const parentName = rows[0].template_name;
 
-    let [childTemplates] = await pool.query(
-      'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+    const [childTemplates] = await pool.query(
+      'SELECT id, name, is_repeated FROM templates WHERE parent_template_id = ?',
       [rows[0].template_id]
     );
-
-    if (selectedChildIds.length > 0) {
-      childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
-    } else {
-      childTemplates = [];
-    }
 
     if (childTemplates.length === 0) {
       return res.json([`${parentName}.docx`]);
@@ -497,18 +470,14 @@ async function downloadSubmissionFile(req, res) {
 
     const parsed = typeof rows[0].values_json === 'string' ? JSON.parse(rows[0].values_json) : (rows[0].values_json || {});
     const values = parsed.values || {};
-    const selectedChildIds = parsed.selectedChildIds || [];
     const parentTemplate = rows[0];
 
     // 1. Kiểm tra nếu file yêu cầu chính là file master mẹ
     if (filename === `${parentTemplate.template_name}.docx`.normalize('NFC')) {
-      let [childTemplatesForSuffix] = await pool.query(
+      const [childTemplatesForSuffix] = await pool.query(
         'SELECT id, is_repeated FROM templates WHERE parent_template_id = ?',
         [parentTemplate.template_id]
       );
-      if (selectedChildIds.length > 0) {
-        childTemplatesForSuffix = childTemplatesForSuffix.filter(t => selectedChildIds.includes(t.id));
-      }
       for (const child of childTemplatesForSuffix) {
         if (child.is_repeated) {
           const recordsList = values[child.id];
@@ -543,14 +512,11 @@ async function downloadSubmissionFile(req, res) {
       return res.send(buffer);
     }
 
-    // 2. Kiểm tra các file con (chỉ active)
-    let [childTemplates] = await pool.query(
-      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ? AND status = \'active\'',
+    // 2. Kiểm tra các file con
+    const [childTemplates] = await pool.query(
+      'SELECT id, name, storage_key, is_repeated FROM templates WHERE parent_template_id = ?',
       [parentTemplate.template_id]
     );
-    if (selectedChildIds.length > 0) {
-      childTemplates = childTemplates.filter(t => selectedChildIds.includes(t.id));
-    }
 
     for (const child of childTemplates) {
       if (child.is_repeated) {

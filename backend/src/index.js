@@ -247,6 +247,10 @@ async function migrateDatabase() {
       await pool.query('ALTER TABLE template_fields ADD COLUMN parent_field_key VARCHAR(100)');
     }
 
+    if (!fieldColumnNames.includes('occurrence_index')) {
+      await pool.query('ALTER TABLE template_fields ADD COLUMN occurrence_index INTEGER DEFAULT 0');
+    }
+
     console.log('✅ Database migration hoàn tất trên PostgreSQL.');
   } catch (error) {
     console.error('❌ Lỗi khi chạy migration database:', error.message);

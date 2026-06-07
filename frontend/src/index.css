@@ -422,6 +422,68 @@
   color: #45464d; margin-bottom: 5px;
 }
 
+/* ─── Customer form (amber accent design) ───────────────────────── */
+.cust-section {
+  border: 1px solid #e0ddd8;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.cust-section-header {
+  background: #1c2b3a;
+  color: #b8924a;
+  padding: 7px 13px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cust-section-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cust-row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 500px) { .cust-row2 { grid-template-columns: 1fr; } }
+.cust-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cust-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.cust-input {
+  width: 100%;
+  padding: 7px 10px;
+  background: #fff;
+  border: 1px solid #c6c6cd;
+  border-radius: 5px;
+  font-size: 13px;
+  color: #191c1e;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+.cust-input:focus {
+  border-color: #b8924a;
+  box-shadow: 0 0 0 3px rgba(184,146,74,0.12);
+}
+.cust-input::placeholder { color: #9a9a9a; }
+.cust-input[type="date"] { cursor: pointer; }
+
 /* ─── Template cards ────────────────────────────────────────────── */
 .lx-template-grid {
   display: grid;

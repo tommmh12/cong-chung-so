@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK,', len\\(d\\), 'templates'\\)\")",
+      "Bash(node src/index.js > /tmp/backend2.log 2>&1 & sleep 4 && rtk curl -s http://localhost:5000/api/templates | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK,', len\\(d\\), 'templates'\\)\" 2>/dev/null)",
+      "Bash(node src/check-files.js)",
+      "Bash(python3 -m json.tool)",
+      "Bash(rtk ps *)",
+      "Bash(curl -s \"http://localhost:5000/api/templates/9afe9a30-65d0-42b1-aaec-365da55587a4/download-original\" -I)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

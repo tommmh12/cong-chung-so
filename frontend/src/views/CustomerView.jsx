@@ -1459,50 +1459,92 @@ export default function CustomerView() {
                           );
                         }
 
-                        const hasLabelFields = stepFields.some(f => f.field_type === 'label');
-                        if (hasLabelFields) {
-                          return stepFields.map(field => {
-                            if (field.field_type === 'label') {
-                              return (
-                                <div key={field.id} style={{ background: '#1e3a5f', color: '#ffffff', padding: '10px 16px', borderRadius: 6, fontWeight: 700, fontSize: 13, letterSpacing: '0.03em', marginTop: 4 }}>
-                                  {field.label}
+                        // Shared field rendering helpers (used by both label-path and grouped-path)
+                        const renderCustField = (field, value, onChange) => (
+                          <div key={field.id} className="cust-field">
+                            <label className="cust-label">
+                              {field.label}{!!field.is_required && <span style={{ color: '#c0392b' }}> *</span>}
+                            </label>
+                            {field.field_type === 'boolean' ? (
+                              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '7px 10px', border: '1px solid #c6c6cd', borderRadius: 5, background: '#f7f9fb' }}>
+                                <input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)}
+                                  style={{ accentColor: '#b8924a', width: 14, height: 14 }} />
+                                <span style={{ fontSize: 12, color: '#45464d', fontWeight: 500 }}>Kích hoạt / Xác nhận</span>
+                              </label>
+                            ) : (
+                              <input
+                                className="cust-input"
+                                type={field.field_type === 'date' ? 'date' : field.field_type === 'number' ? 'number' : 'text'}
+                                required={!!field.is_required}
+                                value={value || ''}
+                                onChange={e => onChange(e.target.value)}
+                              />
+                            )}
+                          </div>
+                        );
+
+                        const isFullWidthField = (f) => {
+                          const k = (f.key_name || '').toLowerCase();
+                          const l = (f.label || '').toLowerCase();
+                          return ['ho_ten','hoten','full_name','dia_chi','diachi','noi_cu','noicu','noi_sinh','address','duong','xa_','phuong_','quan_','tinh_','huyen_'].some(x => k.includes(x))
+                            || ['họ tên','họ và tên','địa chỉ','nơi cư','nơi sinh','tên đầy đủ','đường','phường','quận','tỉnh','huyện'].some(x => l.includes(x));
+                        };
+
+                        const renderSectionFields = (sectionFields, getValue, makeOnChange) => {
+                          const rows = [];
+                          let i = 0;
+                          while (i < sectionFields.length) {
+                            const f = sectionFields[i];
+                            const next = sectionFields[i + 1];
+                            const canPair = f.field_type !== 'boolean' && !isFullWidthField(f)
+                              && next && next.field_type !== 'boolean' && !isFullWidthField(next);
+                            if (canPair) {
+                              rows.push(
+                                <div key={`r${i}`} className="cust-row2">
+                                  {renderCustField(f, getValue(f), makeOnChange(f))}
+                                  {renderCustField(next, getValue(next), makeOnChange(next))}
                                 </div>
                               );
+                              i += 2;
+                            } else {
+                              rows.push(renderCustField(f, getValue(f), makeOnChange(f)));
+                              i++;
                             }
-                            return (
-                              <div key={field.id} className="lx-form-group" style={{ padding: '0 2px' }}>
-                                <label className="lx-label">
-                                  {field.label}
-                                  {!!field.is_required && <span style={{ color: '#ba1a1a' }}> *</span>}
-                                </label>
-                                {field.field_type === 'text' && (
-                                  <input className="lx-input" type="text" required={!!field.is_required}
-                                    value={formData[field.key_name] || ''}
-                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
-                                )}
-                                {field.field_type === 'date' && (
-                                  <input className="lx-input" type="date" required={!!field.is_required}
-                                    value={formData[field.key_name] || ''}
-                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
-                                )}
-                                {field.field_type === 'number' && (
-                                  <input className="lx-input" type="number" required={!!field.is_required}
-                                    value={formData[field.key_name] || ''}
-                                    onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })} />
-                                )}
-                                {field.field_type === 'boolean' && (
-                                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '7px 10px', border: '1px solid #c6c6cd', borderRadius: 4, background: '#f7f9fb' }}>
-                                    <input type="checkbox" checked={!!formData[field.key_name]}
-                                      onChange={e => setFormData({ ...formData, [field.key_name]: e.target.checked })}
-                                      style={{ accentColor: '#000000', width: 14, height: 14 }} />
-                                    <span style={{ fontSize: 12, color: '#45464d', fontWeight: 500, textTransform: 'none', letterSpacing: 'normal' }}>
-                                      Kích hoạt / Xác nhận tùy chọn này
-                                    </span>
-                                  </label>
+                          }
+                          return rows;
+                        };
+
+                        const hasLabelFields = stepFields.some(f => f.field_type === 'label');
+                        if (hasLabelFields) {
+                          const sections = [];
+                          let curSec = { title: null, fields: [] };
+                          for (const field of stepFields) {
+                            if (field.field_type === 'label') {
+                              if (curSec.title !== null || curSec.fields.length > 0) sections.push(curSec);
+                              curSec = { title: field.label, fields: [] };
+                            } else {
+                              curSec.fields.push(field);
+                            }
+                          }
+                          sections.push(curSec);
+
+                          return sections.map((sec, si) => (
+                            <div key={si} className="cust-section">
+                              {sec.title && (
+                                <div className="cust-section-header">
+                                  <span style={{ width: 5, height: 5, background: '#b8924a', borderRadius: '50%', display: 'inline-block', flexShrink: 0 }} />
+                                  {sec.title}
+                                </div>
+                              )}
+                              <div className="cust-section-body">
+                                {renderSectionFields(
+                                  sec.fields,
+                                  (f) => formData[f.key_name],
+                                  (f) => (v) => setFormData({ ...formData, [f.key_name]: v })
                                 )}
                               </div>
-                            );
-                          });
+                            </div>
+                          ));
                         }
 
                         return Object.entries(getGroupedFields(stepFields)).sort(([a], [b]) => a.localeCompare(b)).map(([groupName, groupFields]) => {
@@ -1519,96 +1561,32 @@ export default function CustomerView() {
                           if (isRepeated) {
                             const childId = childTemp.id;
                             const records = formData[childId] || [];
-
                             return (
-                              <div key={groupName} className="lx-card">
-                                <div className="lx-card-header">
-                                  <span className="lx-card-title" style={{ fontSize: 13 }}>
-                                    {displayGroupName} — Nhập nhiều bản ghi
-                                  </span>
-                                </div>
-                                <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                              <div key={groupName} className="cust-section">
+                                <div className="cust-section-body">
                                   {records.map((record, rIdx) => (
-                                    <div
-                                      key={record._id || rIdx}
-                                      style={{
-                                        background: '#f7f9fb', border: '1px solid #e6e8ea',
-                                        borderRadius: 4, padding: '12px 14px',
-                                        display: 'flex', flexDirection: 'column', gap: 12
-                                      }}
-                                    >
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e6e8ea', paddingBottom: 8 }}>
+                                    <div key={record._id || rIdx} style={{ background: '#f7f9fb', border: '1px solid #e6e8ea', borderRadius: 6, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
                                         <span style={{ fontSize: 10, fontWeight: 700, color: '#76777d', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                                           Bản ghi #{rIdx + 1}
                                         </span>
                                         {records.length > 1 && (
-                                          <button
-                                            type="button"
-                                            className="lx-btn lx-btn-danger lx-btn-sm"
-                                            onClick={() => handleRemoveRepeatedRecord(childId, rIdx)}
-                                          >
-                                            Xóa bản ghi
+                                          <button type="button" className="lx-btn lx-btn-danger lx-btn-sm"
+                                            onClick={() => handleRemoveRepeatedRecord(childId, rIdx)}>
+                                            Xóa
                                           </button>
                                         )}
                                       </div>
-                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                        {groupFields.map(field => (
-                                          <div key={field.id} className="lx-form-group">
-                                            <label className="lx-label">
-                                              {field.label}
-                                              {!!field.is_required && <span style={{ color: '#ba1a1a' }}> *</span>}
-                                            </label>
-                                            {field.field_type === 'text' && (
-                                              <input
-                                                className="lx-input"
-                                                type="text"
-                                                required={!!field.is_required}
-                                                value={record[field.key_name] || ''}
-                                                onChange={e => handleUpdateRepeatedField(childId, rIdx, field.key_name, e.target.value)}
-                                              />
-                                            )}
-                                            {field.field_type === 'date' && (
-                                              <input
-                                                className="lx-input"
-                                                type="date"
-                                                required={!!field.is_required}
-                                                value={record[field.key_name] || ''}
-                                                onChange={e => handleUpdateRepeatedField(childId, rIdx, field.key_name, e.target.value)}
-                                              />
-                                            )}
-                                            {field.field_type === 'number' && (
-                                              <input
-                                                className="lx-input"
-                                                type="number"
-                                                required={!!field.is_required}
-                                                value={record[field.key_name] || ''}
-                                                onChange={e => handleUpdateRepeatedField(childId, rIdx, field.key_name, e.target.value)}
-                                              />
-                                            )}
-                                            {field.field_type === 'boolean' && (
-                                              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '7px 10px', border: '1px solid #c6c6cd', borderRadius: 4, background: '#ffffff' }}>
-                                                <input
-                                                  type="checkbox"
-                                                  checked={!!record[field.key_name]}
-                                                  onChange={e => handleUpdateRepeatedField(childId, rIdx, field.key_name, e.target.checked)}
-                                                  style={{ accentColor: '#000000', width: 14, height: 14 }}
-                                                />
-                                                <span style={{ fontSize: 12, color: '#45464d', fontWeight: 500, textTransform: 'none', letterSpacing: 'normal' }}>
-                                                  Kích hoạt / Xác nhận tùy chọn này
-                                                </span>
-                                              </label>
-                                            )}
-                                          </div>
-                                        ))}
-                                      </div>
+                                      {renderSectionFields(
+                                        groupFields,
+                                        (f) => record[f.key_name],
+                                        (f) => (v) => handleUpdateRepeatedField(childId, rIdx, f.key_name, v)
+                                      )}
                                     </div>
                                   ))}
-                                  <button
-                                    type="button"
-                                    className="lx-btn lx-btn-secondary"
+                                  <button type="button" className="lx-btn lx-btn-secondary"
                                     style={{ width: '100%', justifyContent: 'center', borderStyle: 'dashed' }}
-                                    onClick={() => handleAddRepeatedRecord(childId)}
-                                  >
+                                    onClick={() => handleAddRepeatedRecord(childId)}>
                                     <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add</span>
                                     Thêm bản ghi mới
                                   </button>
@@ -1618,59 +1596,13 @@ export default function CustomerView() {
                           }
 
                           return (
-                            <div key={groupName} className="lx-card">
-                              <div className="lx-card-header">
-                                <span className="lx-card-title" style={{ fontSize: 13 }}>{displayGroupName}</span>
-                              </div>
-                              <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                {groupFields.map(field => (
-                                  <div key={field.id} className="lx-form-group">
-                                    <label className="lx-label">
-                                      {field.label}
-                                      {!!field.is_required && <span style={{ color: '#ba1a1a' }}> *</span>}
-                                    </label>
-                                    {field.field_type === 'text' && (
-                                      <input
-                                        className="lx-input"
-                                        type="text"
-                                        required={!!field.is_required}
-                                        value={formData[field.key_name] || ''}
-                                        onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })}
-                                      />
-                                    )}
-                                    {field.field_type === 'date' && (
-                                      <input
-                                        className="lx-input"
-                                        type="date"
-                                        required={!!field.is_required}
-                                        value={formData[field.key_name] || ''}
-                                        onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })}
-                                      />
-                                    )}
-                                    {field.field_type === 'number' && (
-                                      <input
-                                        className="lx-input"
-                                        type="number"
-                                        required={!!field.is_required}
-                                        value={formData[field.key_name] || ''}
-                                        onChange={e => setFormData({ ...formData, [field.key_name]: e.target.value })}
-                                      />
-                                    )}
-                                    {field.field_type === 'boolean' && (
-                                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '7px 10px', border: '1px solid #c6c6cd', borderRadius: 4, background: '#f7f9fb' }}>
-                                        <input
-                                          type="checkbox"
-                                          checked={!!formData[field.key_name]}
-                                          onChange={e => setFormData({ ...formData, [field.key_name]: e.target.checked })}
-                                          style={{ accentColor: '#000000', width: 14, height: 14 }}
-                                        />
-                                        <span style={{ fontSize: 12, color: '#45464d', fontWeight: 500, textTransform: 'none', letterSpacing: 'normal' }}>
-                                          Kích hoạt / Xác nhận tùy chọn này
-                                        </span>
-                                      </label>
-                                    )}
-                                  </div>
-                                ))}
+                            <div key={groupName} className="cust-section">
+                              <div className="cust-section-body">
+                                {renderSectionFields(
+                                  groupFields,
+                                  (f) => formData[f.key_name],
+                                  (f) => (v) => setFormData({ ...formData, [f.key_name]: v })
+                                )}
                               </div>
                             </div>
                           );

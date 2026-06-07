@@ -89,5 +89,15 @@ router.put('/:id/status', templateController.toggleTemplateStatus);
 router.post('/:id/duplicate', templateController.duplicateTemplate);
 router.get('/:id/export', templateController.exportTemplateFields);
 router.post('/:id/import', templateController.importTemplateFields);
+router.post('/:id/upload-children', (req, res, next) => {
+  upload.fields([
+    { name: 'templateFile', maxCount: 10 },
+    { name: 'templateFiles', maxCount: 10 }
+  ])(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, templateController.uploadChildTemplates);
+router.get('/:id/download-zip', templateController.downloadAllAsZip);
 
 module.exports = router;

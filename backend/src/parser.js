@@ -251,7 +251,7 @@ function injectPlaceholders(filePath, outputPath, replacements) {
       let modified = false;
       
       for (const rep of replacements) {
-        const { searchText, key_name, paragraph_context } = rep;
+        const { searchText, key_name, paragraph_context, occurrence_index } = rep;
         if (!searchText || !key_name) continue;
 
         const placeholder = `{{${key_name}}}`;
@@ -261,7 +261,7 @@ function injectPlaceholders(filePath, outputPath, replacements) {
         }
 
         // Thực hiện chuẩn hóa paragraph XML và thay thế có đối chiếu ngữ cảnh
-        const newXml = normalizeAndReplaceText(docXml, searchText, placeholder, paragraph_context, placeholderMap);
+        const newXml = normalizeAndReplaceText(docXml, searchText, placeholder, paragraph_context, placeholderMap, occurrence_index ?? 0);
         if (newXml !== docXml) {
           docXml = newXml;
           modified = true;
@@ -319,7 +319,7 @@ function mergeAdjacentRunsInXml(pXml) {
 /**
  * Quét các paragraph XML, gộp các Run bị chia cắt và thay thế văn bản tĩnh thành biến
  */
-function normalizeAndReplaceText(docXml, searchText, placeholder, paragraphContext, placeholderMap) {
+function normalizeAndReplaceText(docXml, searchText, placeholder, paragraphContext, placeholderMap, occurrenceIndex = 0) {
   // Loại bỏ các thẻ kiểm tra chính tả/ngữ pháp (proofErr) làm chia nhỏ các run
   docXml = docXml.replace(/<w:proofErr\b[^>]*>/g, "");
 
@@ -330,6 +330,7 @@ function normalizeAndReplaceText(docXml, searchText, placeholder, paragraphConte
   const searchRegexPattern = escapedSearch.replace(/\s+/g, '[\\s\\u00a0]+');
   const searchRegex = new RegExp(searchRegexPattern, 'g');
 
+  let matchCount = 0; // tracks how many context-matching paragraphs we've seen
   return docXml.replace(pRegex, (pXml) => {
     // Trích xuất text trần đoạn văn dùng helper mới (có quy đổi Tab/Br/Cr)
     const pText = getParagraphText(pXml);
@@ -370,6 +371,12 @@ function normalizeAndReplaceText(docXml, searchText, placeholder, paragraphConte
         if (!isMatch) {
           return pXml; // Không khớp ngữ cảnh đoạn văn bôi đen, bỏ qua paragraph này
         }
+        // Chỉ thay thế đúng occurrence thứ occurrenceIndex (mặc định 0 = lần đầu tiên)
+        if (matchCount !== occurrenceIndex) {
+          matchCount++;
+          return pXml;
+        }
+        matchCount++;
       }
 
       console.log(`[Tagging] Khớp đoạn văn bôi đen: "${pText}"`);

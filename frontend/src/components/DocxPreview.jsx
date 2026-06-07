@@ -28,16 +28,18 @@ function createReplacementElement(field, val, isModal) {
   
   if (val !== undefined && val !== null && val.toString().trim() !== '') {
     if (isModal) {
-      replEl.className = "bg-emerald-50 text-emerald-800 px-1 py-0.5 rounded border border-emerald-250 font-sans mx-0.5 text-[13px] font-semibold";
+      replEl.className = "bg-emerald-50 text-emerald-800 px-1 rounded border border-emerald-200 mx-0.5";
     } else {
-      replEl.className = "cursor-pointer hover:ring-2 hover:ring-emerald-500 hover:scale-[1.02] transition-all bg-emerald-50 text-emerald-800 px-1 py-0.5 rounded border border-emerald-250 inline-block mx-0.5 text-[13px] font-sans font-semibold";
+      replEl.className = "cursor-pointer hover:ring-2 hover:ring-emerald-500 transition-all bg-emerald-50 text-emerald-800 px-1 rounded border border-emerald-200 inline-block mx-0.5";
     }
     replEl.textContent = val;
   } else {
-    if (isModal) {
-      replEl.className = "bg-zinc-50 text-zinc-500 border border-dashed border-zinc-350 px-1.5 py-0.5 rounded mx-0.5 text-[11px] font-sans font-normal italic";
-    } else {
-      replEl.className = "cursor-pointer hover:ring-2 hover:ring-zinc-400 hover:scale-[1.02] transition-all bg-zinc-50 text-zinc-555 border border-dashed border-zinc-350 px-1.5 py-0.5 rounded mx-0.5 text-[11px] inline-block font-sans font-normal italic";
+    // Unfilled: muted gray italic, inherits document font
+    replEl.style.cssText = 'color:#bbb;font-style:italic;font-weight:normal;font-size:0.85em;border-bottom:1px dotted #ddd;padding-bottom:1px;';
+    if (!isModal) {
+      replEl.style.cursor = 'pointer';
+      replEl.onmouseenter = () => { replEl.style.color = '#999'; replEl.style.borderBottomColor = '#aaa'; };
+      replEl.onmouseleave = () => { replEl.style.color = '#bbb'; replEl.style.borderBottomColor = '#ddd'; };
     }
     replEl.textContent = field.label;
   }

@@ -27,6 +27,9 @@ export default function AdminView() {
   const [parentFields, setParentFields] = useState([]);
   const [linkedChildren, setLinkedChildren] = useState([]);
   const [activeConfigTab, setActiveConfigTab] = useState(null); // null = parent tab, or child template object
+  const [phulucOpen, setPhulucOpen] = useState(false);
+  const [editingKeyId, setEditingKeyId] = useState(null);
+  const [editingKeyValue, setEditingKeyValue] = useState('');
   const [parentTabFields, setParentTabFields] = useState([]); // parent's fields saved when editing child tab
   const [tabFieldsCache, setTabFieldsCache] = useState({}); // { [templateId]: fields[] } — preserves unsaved changes across tab switches
 
@@ -72,6 +75,7 @@ export default function AdminView() {
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadCategoryId, setUploadCategoryId] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
+  const [uploadChildFiles, setUploadChildFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
 
   // Loading & Action State
@@ -83,6 +87,7 @@ export default function AdminView() {
   const [isMobile, setIsMobile] = useState(false);
   const splitContainerRef = useRef(null);
   const resizingRef = useRef(false);
+  const childUploadRef = useRef(null);
 
   // Notifications
   const showNotification = (message, type = 'success') => {
@@ -270,12 +275,23 @@ export default function AdminView() {
         throw new Error(errMsg);
       }
 
+      // Upload child files if any
+      const newTemplateId = data.results?.[0]?.templateId;
+      if (newTemplateId && uploadChildFiles.length > 0) {
+        const childForm = new FormData();
+        uploadChildFiles.forEach(f => childForm.append('templateFiles', f));
+        try {
+          await fetch(`${API_BASE}/templates/${newTemplateId}/upload-children`, { method: 'POST', body: childForm });
+        } catch (_) {}
+      }
+
       showNotification('Đã tải lên và phân tích biểu mẫu thành công!');
       setShowUploadModal(false);
       setUploadName('');
       setUploadDesc('');
       setUploadCategoryId('');
       setUploadFile(null);
+      setUploadChildFiles([]);
       fetchData();
     } catch (err) {
       showNotification(err.message, 'error');
@@ -306,8 +322,14 @@ export default function AdminView() {
           const pData = await pRes.json();
           setParentFields(pData.fields);
         }
+        setLinkedChildren([]);
       } else {
         setParentFields([]);
+        // Auto-load linked children for parent templates
+        try {
+          const lRes = await fetch(`${API_BASE}/templates/${templateId}/links`);
+          if (lRes.ok) setLinkedChildren(await lRes.json());
+        } catch (_) { setLinkedChildren([]); }
       }
 
       setActiveView('config');
@@ -444,6 +466,12 @@ export default function AdminView() {
       return;
     }
 
+    // Count how many existing fields target the same paragraph so we replace the correct occurrence
+    const occurrenceIndex = fields.filter(
+      f => f.paragraph_context && paragraphContext &&
+        f.paragraph_context.trim() === paragraphContext.trim()
+    ).length;
+
     const newField = {
       id: generateId(),
       key_name: cleanKey,
@@ -453,6 +481,7 @@ export default function AdminView() {
       order_index: fields.length,
       replace_text: selectedText,
       paragraph_context: paragraphContext,
+      occurrence_index: occurrenceIndex,
       parent_field_key: null
     };
 
@@ -639,6 +668,32 @@ export default function AdminView() {
   };
 
   // Linking child template modal helper
+  const handleUploadChildFile = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length || !selectedTemplate) return;
+    e.target.value = '';
+    const formData = new FormData();
+    files.forEach(f => formData.append('templateFiles', f));
+    try {
+      const res = await fetch(`${API_BASE}/templates/${selectedTemplate.id}/upload-children`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Upload thất bại');
+      const data = await res.json();
+      showNotification(data.message || `Đã thêm ${files.length} phụ lục`);
+      const lRes = await fetch(`${API_BASE}/templates/${selectedTemplate.id}/links`);
+      if (lRes.ok) setLinkedChildren(await lRes.json());
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const handleDownloadZip = () => {
+    if (!selectedTemplate) return;
+    window.open(`${API_BASE}/templates/${selectedTemplate.id}/download-zip`, '_blank');
+  };
+
   const handleOpenLinkModal = async (template) => {
     setLinkingTemplate(template);
     setLinkSearch('');
@@ -857,9 +912,12 @@ export default function AdminView() {
             <span className="lx-badge lx-badge-pending" style={{ fontSize: 11 }}>
               {parsedFiles.length} tài liệu
             </span>
-            <button className="lx-btn lx-btn-primary lx-btn-sm">
+            <button
+              className="lx-btn lx-btn-primary lx-btn-sm"
+              onClick={() => window.open(`${API_BASE}/submissions/${viewingSubmission.id}/download`, '_blank')}
+            >
               <span className="material-symbols-outlined" style={{ fontSize: 15 }}>download</span>
-              Tải tất cả
+              Tải tất cả ({parsedFiles.length} files)
             </button>
           </div>
         </header>
@@ -921,7 +979,7 @@ export default function AdminView() {
               </div>
               {activeFile && (
                 <a
-                  href={`http://localhost:5000/api/submissions/${viewingSubmission.id}/download-file?filename=${encodeURIComponent(activeFile)}`}
+                  href={`${API_BASE}/submissions/${viewingSubmission.id}/download-file?filename=${encodeURIComponent(activeFile)}`}
                   download
                   className="lx-btn lx-btn-secondary lx-btn-sm"
                 >
@@ -936,7 +994,7 @@ export default function AdminView() {
               {activeFile ? (
                 <DocxPreview
                   key={activeFile}
-                  fileUrl={`http://localhost:5000/api/submissions/${viewingSubmission.id}/download-file?filename=${encodeURIComponent(activeFile)}`}
+                  fileUrl={`${API_BASE}/submissions/${viewingSubmission.id}/download-file?filename=${encodeURIComponent(activeFile)}`}
                   title={activeFile}
                   fields={[]}
                   liveData={{}}
@@ -1699,36 +1757,82 @@ export default function AdminView() {
                     {/* Linked children (only for parent templates) */}
                     {!selectedTemplate.parent_template_id && (
                       <div style={{ borderTop: '1px solid #e6e8ea', paddingTop: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: linkedChildren.length > 0 ? 8 : 6 }}>
+                        {/* Header row — always visible, click to toggle */}
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none', marginBottom: phulucOpen ? 8 : 0 }}
+                          onClick={() => setPhulucOpen(o => !o)}
+                        >
                           <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#45464d' }}>account_tree</span>
                           <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#45464d', flex: 1 }}>
                             Phụ lục ({linkedChildren.length})
                           </span>
-                          <button
-                            type="button"
-                            className="lx-btn lx-btn-secondary lx-btn-sm"
-                            onClick={() => handleOpenLinkModal(selectedTemplate)}
-                          >
-                            <span className="material-symbols-outlined" style={{ fontSize: 13 }}>add_link</span>
-                            Quản lý
-                          </button>
+                          <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#76777d', transition: 'transform 0.18s', transform: phulucOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                            expand_more
+                          </span>
                         </div>
-                        {linkedChildren.length === 0 ? (
-                          <div style={{ fontSize: 12, color: '#76777d', fontStyle: 'italic' }}>
-                            Chưa có phụ lục. Nhấn "Quản lý" để liên kết.
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                            {linkedChildren.map(child => (
-                              <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#f7f9fb', borderRadius: 4, border: '1px solid #e6e8ea', minWidth: 0 }}>
-                                <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#009668', flexShrink: 0 }}>description</span>
-                                <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{child.name}</span>
-                                {child.is_repeated === 1 && (
-                                  <span style={{ fontSize: 9, fontWeight: 700, background: '#e0faf0', color: '#009668', borderRadius: 3, padding: '2px 4px', flexShrink: 0 }}>LẶP</span>
-                                )}
+
+                        {/* Collapsible body */}
+                        {phulucOpen && (
+                          <>
+                            {/* Action buttons */}
+                            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                              <input
+                                ref={childUploadRef}
+                                type="file"
+                                accept=".doc,.docx"
+                                multiple
+                                style={{ display: 'none' }}
+                                onChange={handleUploadChildFile}
+                              />
+                              <button
+                                type="button"
+                                className="lx-btn lx-btn-secondary lx-btn-sm"
+                                style={{ flex: 1, justifyContent: 'center' }}
+                                onClick={e => { e.stopPropagation(); childUploadRef.current?.click(); }}
+                              >
+                                <span className="material-symbols-outlined" style={{ fontSize: 13 }}>upload_file</span>
+                                Upload
+                              </button>
+                              <button
+                                type="button"
+                                className="lx-btn lx-btn-secondary lx-btn-sm"
+                                style={{ flex: 1, justifyContent: 'center' }}
+                                onClick={e => { e.stopPropagation(); handleOpenLinkModal(selectedTemplate); }}
+                              >
+                                <span className="material-symbols-outlined" style={{ fontSize: 13 }}>add_link</span>
+                                Liên kết
+                              </button>
+                            </div>
+
+                            {linkedChildren.length === 0 ? (
+                              <div style={{ fontSize: 12, color: '#76777d', fontStyle: 'italic' }}>
+                                Chưa có phụ lục. Upload file hoặc liên kết template có sẵn.
                               </div>
-                            ))}
-                          </div>
+                            ) : (
+                              <>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                  {linkedChildren.map(child => (
+                                    <div key={child.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#f7f9fb', borderRadius: 4, border: '1px solid #e6e8ea', minWidth: 0 }}>
+                                      <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#009668', flexShrink: 0 }}>description</span>
+                                      <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{child.name}</span>
+                                      {child.is_repeated === 1 && (
+                                        <span style={{ fontSize: 9, fontWeight: 700, background: '#e0faf0', color: '#009668', borderRadius: 3, padding: '2px 4px', flexShrink: 0 }}>LẶP</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                                <button
+                                  type="button"
+                                  className="lx-btn lx-btn-secondary lx-btn-sm"
+                                  style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
+                                  onClick={handleDownloadZip}
+                                >
+                                  <span className="material-symbols-outlined" style={{ fontSize: 13 }}>folder_zip</span>
+                                  Tải xuống ZIP ({linkedChildren.length + 1} files)
+                                </button>
+                              </>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
@@ -1959,13 +2063,16 @@ export default function AdminView() {
                         const isDropTarget = dragOverIdx === idx && draggedIdx !== idx;
                         const commonDragProps = {
                           draggable: true,
-                          onDragStart: () => setDraggedIdx(idx),
-                          onDragOver: (e) => { e.preventDefault(); setDragOverIdx(idx); },
-                          onDrop: () => {
-                            if (draggedIdx === null || draggedIdx === idx) return;
+                          onDragStart: (e) => { e.dataTransfer.setData('text/plain', String(idx)); setDraggedIdx(idx); },
+                          onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverIdx(idx); },
+                          onDrop: (e) => {
+                            e.preventDefault();
+                            const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+                            const to = idx;
+                            if (isNaN(from) || from === to) { setDraggedIdx(null); setDragOverIdx(null); return; }
                             const arr = [...fields];
-                            const [moved] = arr.splice(draggedIdx, 1);
-                            arr.splice(idx, 0, moved);
+                            const [moved] = arr.splice(from, 1);
+                            arr.splice(to, 0, moved);
                             updateFieldsAndHistory(arr.map((f, i) => ({ ...f, order_index: i })));
                             setDraggedIdx(null); setDragOverIdx(null);
                           },
@@ -2007,7 +2114,41 @@ export default function AdminView() {
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                               <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#c6c6cd', cursor: 'grab', flexShrink: 0 }}>drag_indicator</span>
-                              <span className="lx-field-key" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`{{${field.key_name}}}`}</span>
+                              {editingKeyId === field.id ? (
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  value={editingKeyValue}
+                                  onChange={e => setEditingKeyValue(e.target.value)}
+                                  onDragStart={e => e.stopPropagation()}
+                                  onBlur={() => {
+                                    const clean = editingKeyValue.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                                    if (clean && clean !== field.key_name) {
+                                      if (fields.some(f => f.key_name === clean && f.id !== field.id)) {
+                                        showNotification('Mã biến này đã tồn tại', 'error');
+                                      } else {
+                                        handleFieldChange(idx, 'key_name', clean);
+                                        showNotification(`Đã đổi tên biến thành {{${clean}}}`);
+                                      }
+                                    }
+                                    setEditingKeyId(null);
+                                  }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') e.target.blur();
+                                    if (e.key === 'Escape') setEditingKeyId(null);
+                                  }}
+                                  style={{ background: '#0f1e36', border: '1px solid #3b5bdb', borderRadius: 4, color: '#a5b4fc', fontSize: 11, fontFamily: 'monospace', fontWeight: 700, padding: '2px 6px', outline: 'none', minWidth: 0, width: '140px' }}
+                                />
+                              ) : (
+                                <span
+                                  className="lx-field-key"
+                                  title="Click để sửa tên biến"
+                                  onClick={() => { setEditingKeyId(field.id); setEditingKeyValue(field.key_name); }}
+                                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'text' }}
+                                >
+                                  {`{{${field.key_name}}}`}
+                                </span>
+                              )}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#45464d', cursor: 'pointer' }}>
@@ -2200,12 +2341,57 @@ export default function AdminView() {
                     />
                   </label>
                 </div>
+                <div className="lx-form-group">
+                  <label className="lx-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 14 }}>account_tree</span>
+                    Phụ lục kèm theo
+                    <span style={{ fontWeight: 400, color: '#76777d', textTransform: 'none', fontSize: 11 }}>(tuỳ chọn)</span>
+                  </label>
+                  <label style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    width: '100%', minHeight: 72, border: '2px dashed #c6c6cd', borderRadius: 4,
+                    cursor: 'pointer', background: '#f7f9fb', transition: 'border-color 0.15s', padding: '10px 0'
+                  }}>
+                    {uploadChildFiles.length === 0 ? (
+                      <>
+                        <span className="material-symbols-outlined" style={{ fontSize: 24, color: '#76777d', marginBottom: 4 }}>note_add</span>
+                        <span style={{ fontSize: 12, color: '#76777d' }}>Nhấn để chọn file phụ lục (.doc, .docx)</span>
+                      </>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', padding: '0 12px' }}>
+                        {uploadChildFiles.map((f, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 14, color: '#009668' }}>description</span>
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                            <button
+                              type="button"
+                              onClick={e => { e.preventDefault(); setUploadChildFiles(prev => prev.filter((_, j) => j !== i)); }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#76777d', padding: 0, fontSize: 14, lineHeight: 1 }}
+                            >✕</button>
+                          </div>
+                        ))}
+                        <span style={{ fontSize: 11, color: '#b8924a', marginTop: 4 }}>+ Nhấn để thêm file</span>
+                      </div>
+                    )}
+                    <input
+                      type="file"
+                      accept=".doc,.docx"
+                      multiple
+                      style={{ display: 'none' }}
+                      onChange={e => {
+                        const picked = Array.from(e.target.files || []);
+                        setUploadChildFiles(prev => [...prev, ...picked]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
               <div className="lx-modal-footer">
                 <button
                   type="button"
                   className="lx-btn lx-btn-secondary"
-                  onClick={() => setShowUploadModal(false)}
+                  onClick={() => { setShowUploadModal(false); setUploadChildFiles([]); }}
                 >
                   Hủy bỏ
                 </button>

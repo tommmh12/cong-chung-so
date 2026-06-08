@@ -218,6 +218,27 @@ function mergeDocumentToBuffer(templatePath, dataJson) {
   }
 }
 
+function mergeDocumentFromBuffer(templateBuffer, dataJson) {
+  try {
+    const zip = new PizZip(templateBuffer);
+    const doc = new Docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
+      delimiters: { start: '{{', end: '}}' }
+    });
+    doc.render(dataJson);
+    const zipObj = doc.getZip();
+    zipObj.file(/word\/.*\.xml/).forEach((file) => {
+      const xmlContent = file.asText();
+      zipObj.file(file.name, collapseConsecutiveSpacesAcrossTags(xmlContent));
+    });
+    return zipObj.generate({ type: "nodebuffer", compression: "DEFLATE" });
+  } catch (error) {
+    console.error("Lỗi khi map dữ liệu vào DOCX từ buffer:", error);
+    throw new Error("Lỗi render dữ liệu: " + error.message);
+  }
+}
+
 /**
  * Thay thế các chuỗi văn bản tĩnh trong file .docx bằng các thẻ biến {{placeholder}}
  * @param {string} filePath - Đường dẫn file gốc
@@ -657,6 +678,7 @@ module.exports = {
   scanPlaceholders,
   mergeDocument,
   mergeDocumentToBuffer,
+  mergeDocumentFromBuffer,
   injectPlaceholders,
   restorePlaceholder,
   scanTables,

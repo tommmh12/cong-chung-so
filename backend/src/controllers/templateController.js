@@ -12,8 +12,48 @@ const {
   injectPlaceholders
 } = require('../parser');
 const { WORD_EXTENSIONS, ensureDocxForTemplate } = require('../services/document-conversion');
+const storage = require('../services/storage');
 
 const DEFAULT_OFFICE_ID = 'd3b07384-d113-4ec6-a5d6-c0c2a05d2ed1';
+const BACKEND_ROOT = path.join(__dirname, '..', '..');
+
+// Resolve storageKey to a local path for processing.
+// For Supabase paths: downloads to a temp file, returns cleanup fn.
+// For legacy local paths: returns abs path with no-op cleanup.
+async function resolveToLocal(storageKey) {
+  if (storage.isSupabasePath(storageKey)) {
+    const { tmpPath, cleanup } = await storage.downloadToTemp(storageKey);
+    return { localPath: tmpPath, cleanup };
+  }
+  const localPath = path.join(BACKEND_ROOT, storageKey.replace(/\\/g, '/'));
+  return { localPath, cleanup: () => {} };
+}
+
+// Like resolveToLocal but also re-uploads the (possibly modified) temp file on finish.
+async function resolveForModify(storageKey, fn) {
+  if (storage.isSupabasePath(storageKey)) {
+    const { tmpPath, cleanup } = await storage.downloadToTemp(storageKey);
+    try {
+      fn(tmpPath);
+      await storage.uploadFile(tmpPath, storageKey);
+    } finally {
+      cleanup();
+    }
+  } else {
+    const localPath = path.join(BACKEND_ROOT, storageKey.replace(/\\/g, '/'));
+    fn(localPath);
+  }
+}
+
+// Delete file from Supabase or local disk.
+function deleteStorageFile(storageKey) {
+  if (storage.isSupabasePath(storageKey)) {
+    return storage.deleteFile(storageKey);
+  }
+  const absPath = path.join(BACKEND_ROOT, storageKey.replace(/\\/g, '/'));
+  cleanupFileIfExists(absPath);
+  return Promise.resolve();
+}
 
 // Helpers
 function cleanupFileIfExists(filePath) {
@@ -92,8 +132,6 @@ async function createTemplateFromUploadedFile(file, options = {}) {
     fs.renameSync(sourceDocxPath, finalPath);
     cleanupConvertedFile();
 
-    const relativeFilePath = path.relative(path.join(__dirname, '..', '..'), finalPath).replace(/\\/g, '/');
-
     let variables = [];
     try {
       variables = scanPlaceholders(finalPath);
@@ -102,13 +140,18 @@ async function createTemplateFromUploadedFile(file, options = {}) {
       throw parseErr;
     }
 
+    // Upload to Supabase Storage and remove local copy
+    const supabaseKey = `templates/${templateId}.docx`;
+    await storage.uploadFile(finalPath, supabaseKey);
+    cleanupFileIfExists(finalPath);
+
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
 
       await conn.query(
         'INSERT INTO templates (id, office_id, category_id, name, storage_key, status) VALUES (?, ?, ?, ?, ?, ?)',
-        [templateId, officeId, categoryId, templateName, relativeFilePath, 'draft']
+        [templateId, officeId, categoryId, templateName, supabaseKey, 'draft']
       );
 
       for (let i = 0; i < variables.length; i++) {
@@ -268,8 +311,13 @@ async function getTemplateTables(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu.' });
     }
     const template = templates[0];
-    const absolutePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
-    const tables = scanTables(absolutePath);
+    const { localPath: absolutePath, cleanup } = await resolveToLocal(template.storage_key);
+    let tables;
+    try {
+      tables = scanTables(absolutePath);
+    } finally {
+      cleanup();
+    }
     const tablesWithSuggestions = tables.map(tbl => {
       const suggestedFields = tbl.headers.map((header, colIdx) => {
         const lower = header.trim().toLowerCase();
@@ -299,14 +347,21 @@ async function injectTemplateTable(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu.' });
     }
     const template = templates[0];
-    const absolutePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
-    const tables = scanTables(absolutePath);
-    const targetTable = tables.find(t => t.tableIndex === tableIndex);
+    const { localPath: absolutePath, cleanup: cleanupLocal } = await resolveToLocal(template.storage_key);
+    let targetTable;
+    try {
+      const tables = scanTables(absolutePath);
+      targetTable = tables.find(t => t.tableIndex === tableIndex);
+    } finally {
+      cleanupLocal();
+    }
     if (!targetTable) {
       return res.status(404).json({ error: 'Bảng mục tiêu không tồn tại.' });
     }
     try {
-      injectTablePlaceholders(absolutePath, absolutePath, tableIndex, fields, selectedRows);
+      await resolveForModify(template.storage_key, localPath => {
+        injectTablePlaceholders(localPath, localPath, tableIndex, fields, selectedRows);
+      });
     } catch (injectErr) {
       console.error('Inject error:', injectErr);
       return res.status(500).json({ error: 'Không thể gài placeholder vào bảng của file.' });
@@ -353,8 +408,7 @@ async function updateTemplateFields(req, res) {
     if (templates.length === 0) {
       return res.status(404).json({ error: 'Biểu mẫu không tồn tại trên hệ thống.' });
     }
-    const template = templates[0];
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
+    const { storage_key } = templates[0];
 
     const replacements = fields
       .filter(f => f.replace_text && typeof f.replace_text === 'string' && f.replace_text.trim() !== '')
@@ -367,7 +421,9 @@ async function updateTemplateFields(req, res) {
 
     if (replacements.length > 0) {
       try {
-        injectPlaceholders(absoluteTemplatePath, absoluteTemplatePath, replacements);
+        await resolveForModify(storage_key, localPath => {
+          injectPlaceholders(localPath, localPath, replacements);
+        });
       } catch (err) {
         console.error('Lỗi khi ghi đè biến động vào docx:', err);
         return res.status(500).json({ error: 'Không thể ghi đè biến trực quan vào file Word: ' + err.message });
@@ -569,16 +625,15 @@ async function restoreTemplateField(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy biểu mẫu tương ứng.' });
     }
 
-    const template = templates[0];
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
+    const { storage_key } = templates[0];
 
     try {
-      const content = fs.readFileSync(absoluteTemplatePath, "binary");
-      const zip = new PizZip(content);
+      const srcBuffer = await storage.getFileBuffer(storage_key, BACKEND_ROOT);
+      const zip = new PizZip(srcBuffer);
       const xmlFiles = zip.file(/word\/.*\.xml/);
       let modified = false;
       const placeholder = `{{${key_name}}}`;
-      
+
       for (const file of xmlFiles) {
         let docXml = file.asText();
         if (docXml.includes(placeholder)) {
@@ -590,7 +645,11 @@ async function restoreTemplateField(req, res) {
 
       if (modified) {
         const buffer = zip.generate({ type: "nodebuffer" });
-        fs.writeFileSync(absoluteTemplatePath, buffer);
+        if (storage.isSupabasePath(storage_key)) {
+          await storage.uploadBuffer(buffer, storage_key);
+        } else {
+          fs.writeFileSync(path.join(BACKEND_ROOT, storage_key.replace(/\\/g, '/')), buffer);
+        }
       }
     } catch (err) {
       console.error('Lỗi khi khôi phục biến trong file docx:', err);
@@ -614,12 +673,15 @@ async function downloadOriginalTemplate(req, res) {
       return res.status(404).json({ error: 'Không tìm thấy file mẫu.' });
     }
 
-    const absolutePath = path.join(__dirname, '..', '..', rows[0].storage_key.replace(/\\/g, '/'));
-    if (!fs.existsSync(absolutePath)) {
+    const { storage_key, name } = rows[0];
+    try {
+      const buffer = await storage.getFileBuffer(storage_key, BACKEND_ROOT);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}.docx`);
+      res.send(buffer);
+    } catch (err) {
       return res.status(404).json({ error: 'File mẫu gốc không tồn tại trên hệ thống.' });
     }
-
-    res.download(absolutePath, `${rows[0].name}.docx`);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Không thể tải file mẫu.' });
@@ -649,31 +711,18 @@ async function deleteTemplate(req, res) {
     // Delete children first (their own fields/submissions cascade via FK)
     for (const child of children) {
       await pool.query('DELETE FROM templates WHERE id = ?', [child.id]);
-      const childPath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
-      if (fs.existsSync(childPath)) {
-        try { fs.unlinkSync(childPath); } catch (_) {}
-      }
+      await deleteStorageFile(child.storage_key);
     }
 
     await pool.query('DELETE FROM templates WHERE id = ?', [templateId]);
-
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', template.storage_key.replace(/\\/g, '/'));
-    if (fs.existsSync(absoluteTemplatePath)) {
-      try {
-        fs.unlinkSync(absoluteTemplatePath);
-      } catch (err) {
-        console.error(`Không thể xóa file template vật lý ${absoluteTemplatePath}:`, err);
-      }
-    }
+    await deleteStorageFile(template.storage_key);
 
     for (const sub of submissions) {
       if (sub.output_file_path) {
-        const absoluteOutputPath = path.join(__dirname, '..', '..', sub.output_file_path.replace(/\\/g, '/'));
+        const absoluteOutputPath = path.join(BACKEND_ROOT, sub.output_file_path.replace(/\\/g, '/'));
         if (fs.existsSync(absoluteOutputPath)) {
-          try {
-            fs.unlinkSync(absoluteOutputPath);
-          } catch (err) {
-            console.error(`Không thể xóa file output vật lý ${absoluteOutputPath}:`, err);
+          try { fs.unlinkSync(absoluteOutputPath); } catch (err) {
+            console.error(`Không thể xóa file output ${absoluteOutputPath}:`, err);
           }
         }
       }
@@ -787,27 +836,22 @@ async function duplicateTemplate(req, res) {
     }
     const originalTemplate = templates[0];
     const newTemplateId = uuidv4();
-    
-    const ext = path.extname(originalTemplate.storage_key.replace(/\\/g, '/')) || '.docx';
-    const newFileName = `${newTemplateId}${ext}`;
-    const templatesDir = path.dirname(path.join(__dirname, '..', '..', originalTemplate.storage_key.replace(/\\/g, '/')));
-    const newFilePath = path.join(templatesDir, newFileName);
-    const absoluteOriginalPath = path.join(__dirname, '..', '..', originalTemplate.storage_key.replace(/\\/g, '/'));
+    const newSupabaseKey = `templates/${newTemplateId}.docx`;
 
-    if (fs.existsSync(absoluteOriginalPath)) {
-      fs.copyFileSync(absoluteOriginalPath, newFilePath);
-    } else {
-      return res.status(404).json({ error: 'Tệp tin Word của biểu mẫu gốc không tồn tại vật lý.' });
+    let fileBuffer;
+    try {
+      fileBuffer = await storage.getFileBuffer(originalTemplate.storage_key, BACKEND_ROOT);
+    } catch (err) {
+      return res.status(404).json({ error: 'Tệp tin Word của biểu mẫu gốc không tồn tại.' });
     }
-
-    const relativeNewFilePath = path.relative(path.join(__dirname, '..', '..'), newFilePath).replace(/\\/g, '/');
+    await storage.uploadBuffer(fileBuffer, newSupabaseKey);
 
     await conn.beginTransaction();
 
     const newName = `[Sao chép] ${originalTemplate.name}`;
     await conn.query(
       'INSERT INTO templates (id, office_id, category_id, name, storage_key, status, parent_template_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [newTemplateId, originalTemplate.office_id, originalTemplate.category_id || null, newName, relativeNewFilePath, 'draft', null]
+      [newTemplateId, originalTemplate.office_id, originalTemplate.category_id || null, newName, newSupabaseKey, 'draft', null]
     );
 
     const [fields] = await conn.query(
@@ -952,10 +996,14 @@ async function uploadChildTemplates(req, res) {
         const finalDocxPath = path.join(templatesDir, `${id}.docx`);
         fs.renameSync(sourceDocxPath, finalDocxPath);
         cleanupConverted();
-        const storageKey = path.relative(path.join(__dirname, '..', '..'), finalDocxPath).replace(/\\/g, '/');
 
-        // Scan placeholders like the main upload does
+        // Scan placeholders while file is still local
         const variables = scanPlaceholders(finalDocxPath);
+
+        // Upload to Supabase and remove local copy
+        const storageKey = `templates/${id}.docx`;
+        await storage.uploadFile(finalDocxPath, storageKey);
+        cleanupFileIfExists(finalDocxPath);
 
         const conn = await pool.getConnection();
         try {
@@ -975,7 +1023,8 @@ async function uploadChildTemplates(req, res) {
           await conn.commit();
         } catch (dbErr) {
           await conn.rollback();
-          cleanupFileIfExists(finalDocxPath);
+          // File already uploaded; clean up from Supabase on DB failure
+          await storage.deleteFile(storageKey).catch(() => {});
           throw dbErr;
         } finally {
           conn.release();
@@ -1020,13 +1069,15 @@ async function downloadAllAsZip(req, res) {
 
     const usedNames = {};
     for (const tmpl of all) {
-      const absPath = path.join(__dirname, '..', '..', tmpl.storage_key.replace(/^\//, ''));
-      if (fs.existsSync(absPath)) {
-        const ext = path.extname(absPath) || '.docx';
+      try {
+        const buffer = await storage.getFileBuffer(tmpl.storage_key, BACKEND_ROOT);
+        const ext = path.extname(tmpl.storage_key) || '.docx';
         let fileName = `${tmpl.name}${ext}`;
         if (usedNames[fileName]) { usedNames[fileName]++; fileName = `${tmpl.name}_${usedNames[fileName]}${ext}`; }
         else usedNames[fileName] = 1;
-        archive.file(absPath, { name: fileName });
+        archive.append(buffer, { name: fileName });
+      } catch (err) {
+        console.error(`Skip ${tmpl.name} in ZIP:`, err.message);
       }
     }
 

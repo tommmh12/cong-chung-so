@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const { pool, testConnection } = require('./db');
+const { ensureBucket } = require('./services/storage');
 const categoriesRouter = require('./routes/categories');
 const templatesRouter = require('./routes/templates');
 const submissionsRouter = require('./routes/submissions');
@@ -263,6 +264,7 @@ async function startServer() {
   await migrateDatabase();
   await seedDefaultOffice();
   await seedDefaultTemplateCategories();
+  await ensureBucket();
   
   app.listen(PORT, () => {
     console.log(`🚀 Backend server running at http://localhost:${PORT}`);

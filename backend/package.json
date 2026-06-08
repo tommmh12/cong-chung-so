@@ -9,6 +9,7 @@
     "convert:doc": "node src/scripts/bulk-convert-doc-templates.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.107.0",
     "archiver": "^7.0.1",
     "cors": "^2.8.5",
     "docxtemplater": "^3.47.0",

@@ -3,7 +3,14 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const { pool } = require('../db');
-const { mergeDocumentToBuffer } = require('../parser');
+const { mergeDocumentFromBuffer } = require('../parser');
+const storage = require('../services/storage');
+
+const BACKEND_ROOT = path.join(__dirname, '..', '..');
+
+async function getTemplateBuffer(storageKey) {
+  return storage.getFileBuffer(storageKey, BACKEND_ROOT);
+}
 
 // Helper to prepare values for templates
 const prepareValuesForTemplate = (fields, data, contextLabel = '') => {
@@ -355,9 +362,8 @@ async function downloadSubmission(req, res) {
       [parentTemplate.template_id]
     );
     const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
-    const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.storage_key.replace(/\\/g, '/'));
-
-    const masterBuffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
+    const parentTemplateBuffer = await getTemplateBuffer(parentTemplate.storage_key);
+    const masterBuffer = mergeDocumentFromBuffer(parentTemplateBuffer, masterResult.padded);
     const safeName = parentTemplate.template_name.replace(/[^a-zA-Z0-9À-ỹ\s-_]/g, '');
 
     if (childTemplates.length === 0) {
@@ -379,20 +385,19 @@ async function downloadSubmission(req, res) {
         'SELECT key_name, is_required, replace_text, parent_field_key, label FROM template_fields WHERE template_id = ?',
         [child.id]
       );
+      const childTemplateBuffer = await getTemplateBuffer(child.storage_key);
 
       if (child.is_repeated) {
         const recordsList = values[child.id];
         const recordsArray = Array.isArray(recordsList) ? recordsList : [{}];
         for (let rIdx = 0; rIdx < recordsArray.length; rIdx++) {
           const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
-          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
-          const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
+          const childBuffer = mergeDocumentFromBuffer(childTemplateBuffer, prep.padded);
           archive.append(childBuffer, { name: `${child.name}_Căn_${rIdx + 1}.docx` });
         }
       } else {
         const prep = prepareValuesForTemplate(childFields, values, child.name);
-        const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
-        const childBuffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
+        const childBuffer = mergeDocumentFromBuffer(childTemplateBuffer, prep.padded);
         archive.append(childBuffer, { name: `${child.name}.docx` });
       }
     }
@@ -504,8 +509,8 @@ async function downloadSubmissionFile(req, res) {
         [parentTemplate.template_id]
       );
       const masterResult = prepareValuesForTemplate(parentFields, values, parentTemplate.template_name);
-      const absoluteTemplatePath = path.join(__dirname, '..', '..', parentTemplate.storage_key.replace(/\\/g, '/'));
-      const buffer = mergeDocumentToBuffer(absoluteTemplatePath, masterResult.padded);
+      const parentTmplBuffer = await getTemplateBuffer(parentTemplate.storage_key);
+      const buffer = mergeDocumentFromBuffer(parentTmplBuffer, masterResult.padded);
 
       res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -529,8 +534,8 @@ async function downloadSubmissionFile(req, res) {
               [child.id]
             );
             const prep = prepareValuesForSingleRecord(childFields, recordsArray[rIdx], values, `${child.name} (Bản ghi ${rIdx + 1})`);
-            const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
-            const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
+            const childTmplBuf = await getTemplateBuffer(child.storage_key);
+            const buffer = mergeDocumentFromBuffer(childTmplBuf, prep.padded);
 
             res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -544,8 +549,8 @@ async function downloadSubmissionFile(req, res) {
             [child.id]
           );
           const prep = prepareValuesForTemplate(childFields, values, child.name);
-          const absoluteChildTemplatePath = path.join(__dirname, '..', '..', child.storage_key.replace(/\\/g, '/'));
-          const buffer = mergeDocumentToBuffer(absoluteChildTemplatePath, prep.padded);
+          const childTmplBuf = await getTemplateBuffer(child.storage_key);
+          const buffer = mergeDocumentFromBuffer(childTmplBuf, prep.padded);
 
           res.setHeader('Content-Disposition', `attachment; filename=${encodeURIComponent(filename)}`);
           res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
